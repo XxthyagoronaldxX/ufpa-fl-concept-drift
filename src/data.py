@@ -200,3 +200,48 @@ def split_iid(dataset: TensorDataset, num_clients: int) -> list:
         )
         for i in range(num_clients)
     ]
+
+
+def split_non_iid(dataset: TensorDataset, num_clients: int, alpha: float = 0.5) -> list:
+    """Divide o dataset de forma Non-IID usando distribuição Dirichlet.
+
+    Args:
+        alpha: concentração Dirichlet.
+               Menor valor → mais heterogêneo (0.1 = extremo, 1.0 = moderado, 10 ≈ IID).
+    """
+    X, y = dataset.tensors
+    y_np = y.numpy()
+    classes = np.unique(y_np)
+
+    client_indices: list[list[int]] = [[] for _ in range(num_clients)]
+
+    for c in classes:
+        idx_c = np.where(y_np == c)[0].copy()
+        np.random.shuffle(idx_c)
+
+        proportions = np.random.dirichlet([alpha] * num_clients)
+        cuts = (np.cumsum(proportions) * len(idx_c)).astype(int)
+        cuts = np.clip(cuts, 0, len(idx_c))
+
+        prev = 0
+        for i, cut in enumerate(cuts):
+            client_indices[i].extend(idx_c[prev:cut].tolist())
+            prev = cut
+
+    return [
+        TensorDataset(
+            X[torch.tensor(idx, dtype=torch.long)],
+            y[torch.tensor(idx, dtype=torch.long)],
+        )
+        for idx in client_indices
+    ]
+
+
+def mix_client_pools(pool_a: list, pool_b: list, n_drift: int) -> list:
+    """Combina dois pools de clientes: os últimos n_drift recebem pool_b.
+
+    Modela drift parcial: alguns clientes observam o novo padrão de spam
+    enquanto os demais continuam com o padrão anterior.
+    """
+    stable = len(pool_a) - n_drift
+    return pool_a[:stable] + pool_b[stable:]

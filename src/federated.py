@@ -1,7 +1,8 @@
 """
 federated.py
 ────────────
-Núcleo do Federated Learning: treino local, agregação FedAvg e avaliação.
+Núcleo do Federated Learning: treino local, agregação FedAvg, avaliação
+e detector de concept drift baseado em janela deslizante.
 """
 
 import numpy as np
@@ -13,6 +14,42 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import f1_score
 
 from config import BATCH_SIZE, DEVICE
+
+# ── Detector de Concept Drift ─────────────────────────────────────────────────
+
+
+class DriftDetector:
+    """Detector de drift baseado em queda de acurácia em janela deslizante.
+
+    Emite alerta quando a média das últimas `window` rodadas cai mais que
+    `threshold` pontos percentuais em relação ao pico de acurácia observado.
+
+    Args:
+        window:    número de rodadas recentes a considerar.
+        threshold: queda mínima (p.p.) para disparar o alerta.
+    """
+
+    def __init__(self, window: int = 3, threshold: float = 4.0):
+        self.window = window
+        self.threshold = threshold
+        self._history: list[float] = []
+        self._peak: float = 0.0
+
+    def update(self, acc: float) -> bool:
+        """Registra acurácia e retorna True se drift for detectado."""
+        self._history.append(acc)
+        self._peak = max(self._peak, acc)
+
+        if len(self._history) < self.window:
+            return False
+
+        recent_avg = float(np.mean(self._history[-self.window :]))
+        return (self._peak - recent_avg) > self.threshold
+
+    def reset_peak(self) -> None:
+        """Reinicia o pico de referência após adaptação ao novo padrão."""
+        if self._history:
+            self._peak = self._history[-1]
 
 
 def local_train(global_model: nn.Module, dataset: TensorDataset, epochs: int, lr: float) -> tuple[dict, int]:

@@ -17,18 +17,24 @@ _COLORS = {
     "Drift Súbito": "#F44336",
     "Drift Gradual": "#FF9800",
     "Drift Recorrente": "#9C27B0",
+    "Non-IID Parcial": "#795548",
+    "FL Adaptativo": "#4CAF50",
 }
 _MARKERS = {
     "FL Padrão": "o",
     "Drift Súbito": "s",
     "Drift Gradual": "^",
     "Drift Recorrente": "D",
+    "Non-IID Parcial": "P",
+    "FL Adaptativo": "*",
 }
 _LINESTYLES = {
     "FL Padrão": "-",
     "Drift Súbito": "--",
     "Drift Gradual": "-.",
     "Drift Recorrente": ":",
+    "Non-IID Parcial": (0, (3, 1, 1, 1)),
+    "FL Adaptativo": "-",
 }
 
 
@@ -96,7 +102,7 @@ def _plot_pre_post_accuracy(ax, histories, drift_round):
     ax.bar(x - w / 2, pre_list, w, label="Pré-drift", color="#42A5F5", alpha=0.85)
     ax.bar(x + w / 2, post_list, w, label="Pós-drift", color="#EF5350", alpha=0.85)
     ax.set_xticks(x)
-    ax.set_xticklabels(labels_list, fontsize=8, rotation=12)
+    ax.set_xticklabels(labels_list, fontsize=7, rotation=20)
     ax.set_ylabel("Acurácia Média (%)", fontsize=11)
     ax.set_title("Acurácia Média: Pré vs Pós Drift", fontsize=11, fontweight="bold")
     ax.legend(fontsize=9)
@@ -124,25 +130,39 @@ def _plot_drift_impact(ax, histories, drift_round):
 
     ax.set_ylabel("Queda de Acurácia (p.p.)", fontsize=11)
     ax.set_title("Impacto do Concept Drift", fontsize=11, fontweight="bold")
-    ax.set_xticklabels(labels_list, fontsize=8, rotation=12)
+    ax.set_xticklabels(labels_list, fontsize=7, rotation=20)
     ax.grid(True, axis="y", alpha=0.3)
     ax.set_ylim(0, max(max(drops) * 1.35, 1))
 
 
+def _recovery_rounds(acc_history: list, drift_round: int, tolerance_pp: float = 2.0) -> str:
+    """Rodadas necessárias para recuperar até tolerance_pp abaixo do pico pré-drift."""
+    if drift_round <= 1 or drift_round > len(acc_history):
+        return "—"
+    pre_peak = max(acc_history[: drift_round - 1])
+    target = pre_peak - tolerance_pp
+    for i in range(drift_round - 1, len(acc_history)):
+        if acc_history[i] >= target:
+            return str(i - (drift_round - 1) + 1)  # rodadas após o drift
+    return f">{len(acc_history) - drift_round + 1}"
+
+
 def print_summary(histories: dict, drift_round: int = DRIFT_ROUND) -> None:
-    """Imprime tabela de resumo com acurácia final, F1 e queda pós-drift."""
-    print(f"\n{'═' * 68}")
+    """Imprime tabela de resumo com acurácia final, F1, queda pós-drift e tempo de recuperação."""
+    W = 76
+    print(f"\n{'═' * W}")
     print(f"  RESUMO FINAL — FL com Concept Drift: Spam de E-mail")
-    print(f"{'═' * 68}")
-    print(f"  {'Cenário':<22} │ {'Acc Final':>9} │ {'F1 Final':>8} │ {'Queda Acc':>10}")
-    print(f"  {'-' * 62}")
+    print(f"{'═' * W}")
+    print(f"  {'Cenário':<22} │ {'Acc Final':>9} │ {'F1 Final':>8} │ {'Queda Acc':>10} │ {'Recuperação':>12}")
+    print(f"  {'-' * 70}")
 
     for label, (acc_h, f1_h) in histories.items():
         pre = np.mean(acc_h[: drift_round - 1]) if drift_round > 1 else acc_h[0]
         post = np.mean(acc_h[drift_round - 1 :])
-        print(f"  {label:<22} │ {acc_h[-1]:>8.1f}% │ {f1_h[-1]:>7.1f}% │ {pre - post:>8.1f} p.p.")
+        rec = _recovery_rounds(acc_h, drift_round)
+        print(f"  {label:<22} │ {acc_h[-1]:>8.1f}% │ {f1_h[-1]:>7.1f}% │ {pre - post:>8.1f} p.p. │ {rec:>9} rod.")
 
-    print(f"{'═' * 68}")
+    print(f"{'═' * W}")
     print(f"\n  Configuração:")
     print(f"    • Clientes FL:      {NUM_CLIENTS}")
     print(f"    • Rodadas:          {NUM_ROUNDS}")
@@ -150,4 +170,4 @@ def print_summary(histories: dict, drift_round: int = DRIFT_ROUND) -> None:
     print(f"    • Início do drift:  rodada {DRIFT_ROUND}")
     print(f"    • Dataset:          sintético — {FEATURE_DIM} features (spam/ham)")
     print(f"    • Ciclo recorrente: {CYCLE_LEN} rodadas por fase")
-    print(f"{'═' * 68}\n")
+    print(f"{'═' * W}\n")

@@ -23,15 +23,18 @@ import torch
 # Garante que os módulos do projeto sejam encontrados ao rodar diretamente
 sys.path.insert(0, os.path.dirname(__file__))
 
-from config import SEED, DRIFT_ROUND, N_TRAIN, N_TEST
+from config import SEED, DRIFT_ROUND, N_TRAIN, N_TEST, DETECTOR_WINDOW, DETECTOR_THRESHOLD, BOOST_LR_FACTOR, BOOST_ROUNDS
 from scenarios import (
     build_data_pools,
     make_standard_fns,
     make_sudden_fns,
     make_gradual_fns,
     make_recurrent_fns,
+    make_non_iid_partial_fns,
+    make_adaptive_fns,
     run_scenario,
 )
+from federated import DriftDetector
 from visualization import plot_results, print_summary
 
 warnings.filterwarnings("ignore")
@@ -58,6 +61,14 @@ def main():
         "Drift Súbito": run_scenario("FL Drift Súbito", *make_sudden_fns(pools)),
         "Drift Gradual": run_scenario("FL Drift Gradual", *make_gradual_fns(pools)),
         "Drift Recorrente": run_scenario("FL Drift Recorrente", *make_recurrent_fns(pools)),
+        "Non-IID Parcial": run_scenario("Non-IID Drift Parcial", *make_non_iid_partial_fns(pools)),
+        "FL Adaptativo": run_scenario(
+            "FL Adaptativo",
+            *make_adaptive_fns(pools),
+            detector=DriftDetector(DETECTOR_WINDOW, DETECTOR_THRESHOLD),
+            boost_lr_factor=BOOST_LR_FACTOR,
+            boost_rounds=BOOST_ROUNDS,
+        ),
     }
 
     print_summary(histories, DRIFT_ROUND)

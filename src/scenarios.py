@@ -14,13 +14,22 @@ visível o impacto do drift: o modelo treinado na fase A falha ao ser avaliado
 na fase B (spam furtivo).
 """
 
-from torch.utils.data import TensorDataset
-
-from config import DRIFT_ROUND, NUM_ROUNDS, CYCLE_LEN, N_TRAIN, N_TEST, NUM_CLIENTS
-from data import make_dataset, split_iid
+from config import (
+    DRIFT_ROUND,
+    NUM_ROUNDS,
+    CYCLE_LEN,
+    N_TRAIN,
+    N_TEST,
+    NUM_CLIENTS,
+    DEVICE,
+    LEARNING_RATE,
+    LOCAL_EPOCHS,
+    DIRICHLET_ALPHA,
+    DRIFT_CLIENTS,
+)
+from data import make_dataset, split_iid, split_non_iid, mix_client_pools
 from model import SpamMLP
-from federated import local_train, fed_avg, evaluate
-from config import DEVICE, LEARNING_RATE, LOCAL_EPOCHS
+from federated import local_train, fed_avg, evaluate, DriftDetector
 
 # ── Preparação dos pools de dados ────────────────────────────────────────────
 
@@ -52,6 +61,10 @@ def build_data_pools() -> dict:
     test_B = make_dataset(N_TEST, spam_phase="B")
     gradual_test = {rnd: make_dataset(N_TEST, spam_phase="mixed", alpha=min(1.0, (rnd - DRIFT_ROUND + 1) / n_drift_rounds)) for rnd in range(DRIFT_ROUND, NUM_ROUNDS + 1)}
 
+    # Non-IID pools (Dirichlet alpha=DIRICHLET_ALPHA)
+    clients_A_noniid = split_non_iid(make_dataset(N_TRAIN, spam_phase="A"), NUM_CLIENTS, DIRICHLET_ALPHA)
+    clients_B_noniid = split_non_iid(make_dataset(N_TRAIN, spam_phase="B"), NUM_CLIENTS, DIRICHLET_ALPHA)
+
     return {
         "clients_A": clients_A,
         "clients_B": clients_B,
@@ -59,6 +72,8 @@ def build_data_pools() -> dict:
         "test_A": test_A,
         "test_B": test_B,
         "gradual_test": gradual_test,
+        "clients_A_noniid": clients_A_noniid,
+        "clients_B_noniid": clients_B_noniid,
     }
 
 
@@ -121,6 +136,37 @@ def make_recurrent_fns(pools: dict):
     return get_train, get_test
 
 
+def make_non_iid_partial_fns(pools: dict):
+    """Cenário 5 — Non-IID Drift Parcial.
+
+    Distribuição Dirichlet entre clientes (heterogênea).  Após DRIFT_ROUND,
+    apenas DRIFT_CLIENTS dos NUM_CLIENTS clientes recebem dados de fase B;
+    os demais continuam com fase A — modelando um drift que atinge a rede
+    de forma assimétrica.
+    """
+
+    def get_train(rnd):
+        if rnd < DRIFT_ROUND:
+            return pools["clients_A_noniid"]
+        return mix_client_pools(pools["clients_A_noniid"], pools["clients_B_noniid"], DRIFT_CLIENTS)
+
+    def get_test(rnd):
+        return pools["test_A"] if rnd < DRIFT_ROUND else pools["test_B"]
+
+    return get_train, get_test
+
+
+def make_adaptive_fns(pools: dict):
+    """Cenário 6 — FL Adaptativo.
+
+    Mesma configuração Non-IID Drift Parcial do cenário 5, mas run_scenario
+    é chamado com um DriftDetector activo: ao detectar queda de acurácia,
+    o servidor reinicia a última camada do modelo global e eleva
+    temporariamente a learning rate (LR boost por BOOST_ROUNDS rodadas).
+    """
+    return make_non_iid_partial_fns(pools)
+
+
 # ── Log por rodada ───────────────────────────────────────────────────────────
 
 
@@ -145,19 +191,28 @@ def run_scenario(
     name: str,
     get_train_fn,
     get_test_fn,
+    detector: DriftDetector | None = None,
+    boost_lr_factor: float = 1.0,
+    boost_rounds: int = 0,
 ) -> tuple[list, list]:
     """Executa NUM_ROUNDS de FL e retorna históricos de acurácia e F1.
 
     Args:
-        name:         Identificador do cenário (usado no log).
-        get_train_fn: callable(rnd) → list[TensorDataset]
-        get_test_fn:  callable(rnd) → TensorDataset
+        name:            Identificador do cenário (usado no log).
+        get_train_fn:    callable(rnd) → list[TensorDataset]
+        get_test_fn:     callable(rnd) → TensorDataset
+        detector:        DriftDetector opcional; quando fornecido, activa
+                         o modo adaptativo (reset de camada + LR boost).
+        boost_lr_factor: multiplicador de LR após detecção de drift.
+        boost_rounds:    rodadas com LR elevada após detecção.
 
     Returns:
         (acc_history, f1_history) — listas com um valor por rodada.
     """
     model = SpamMLP().to(DEVICE)
     acc_hist, f1_hist = [], []
+    current_lr = LEARNING_RATE
+    boost_remaining = 0
 
     print(f"\n{'═' * 64}")
     print(f"  Cenário: {name}")
@@ -168,7 +223,7 @@ def run_scenario(
     for rnd in range(1, NUM_ROUNDS + 1):
         # Treino local + agregação FedAvg
         client_datasets = get_train_fn(rnd)
-        updates = [local_train(model, ds, LOCAL_EPOCHS, LEARNING_RATE) for ds in client_datasets]
+        updates = [local_train(model, ds, LOCAL_EPOCHS, current_lr) for ds in client_datasets]
         model.load_state_dict(fed_avg(model.state_dict(), updates))
 
         # Avaliação no dataset de teste da rodada atual
@@ -177,6 +232,23 @@ def run_scenario(
         f1_hist.append(f1)
 
         note = _drift_note(name, rnd)
+
+        # ── Lógica adaptativa ────────────────────────────────────────────────
+        if detector is not None:
+            drift_found = detector.update(acc)
+            if drift_found and boost_remaining == 0:
+                # Reinicia última camada do modelo global e eleva LR
+                model.net[-1].reset_parameters()
+                boost_remaining = boost_rounds
+                current_lr = LEARNING_RATE * boost_lr_factor
+                note = f"◄ DRIFT DETECTADO — reset camada + LR×{boost_lr_factor:.0f}"
+                detector.reset_peak()
+            elif boost_remaining > 0:
+                boost_remaining -= 1
+                if boost_remaining == 0:
+                    current_lr = LEARNING_RATE
+                note = f"adaptação activa ({boost_remaining + 1} rod. restantes)"
+
         print(f"  {rnd:>7d}  │  {acc:>6.1f}%  │  {f1:>6.1f}%  │  {note}")
 
     return acc_hist, f1_hist
