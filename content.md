@@ -44,3 +44,31 @@ Os 500 dados de teste simulam e-mails inéditos, usados apenas para medir a acur
 # O que é F1-Score.
 
 O F1-score é uma métrica que avalia o equilíbrio entre precisão (quantos dos e-mails marcados como spam realmente são spam) e revocação (quantos dos spams reais o modelo conseguiu encontrar). Ele é especialmente útil quando as classes estão desbalanceadas, como em detecção de spam.
+
+# Se necessário, explicação das constantes da Config:
+
+- SEED: Garante que os resultados dos experimentos sejam sempre os mesmos, facilitando comparações e depuração.
+
+- NUM_CLIENTS: Quantidade de clientes simulados no aprendizado federado.
+
+- NUM_ROUNDS: Número total de rodadas de comunicação entre clientes e servidor.
+
+- LOCAL_EPOCHS: Quantas vezes cada cliente treina localmente antes de enviar os resultados.
+
+- BATCH_SIZE: Tamanho do lote de dados usado em cada passo de treinamento.
+
+- LEARNING_RATE: Taxa de aprendizado do otimizador (o “passo” dado na atualização dos pesos).
+
+- DRIFT_ROUND: Rodada em que ocorre a mudança de conceito (drift) no experimento.
+
+- CYCLE_LEN: Duração de cada fase no cenário de drift recorrente (quantas rodadas cada padrão permanece ativo).
+
+- N_TRAIN: Quantidade total de amostras de treino (divididas entre os clientes).
+
+- N_TEST: Quantidade de amostras de teste (usadas apenas para avaliação).
+
+- FEATURE_DIM: Número de características (features) de cada e-mail simulado.
+
+- SPAM_RATIO: Proporção de e-mails de spam no dataset.
+
+- DEVICE: Define se o código vai rodar na GPU (se disponível) ou na CPU.
