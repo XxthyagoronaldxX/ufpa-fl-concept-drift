@@ -20,10 +20,9 @@ import warnings
 import numpy as np
 import torch
 
-# Garante que os módulos do projeto sejam encontrados ao rodar diretamente
 sys.path.insert(0, os.path.dirname(__file__))
 
-from config import SEED, DRIFT_ROUND, N_TRAIN, N_TEST
+from config import SEED, DRIFT_ROUND, N_TRAIN, N_TEST, DEVICE
 from scenarios import (
     build_data_pools,
     make_standard_fns,
@@ -36,14 +35,11 @@ from visualization import plot_results, print_summary
 
 warnings.filterwarnings("ignore")
 
-# ── Reprodutibilidade ────────────────────────────────────────────────────────
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 
 
 def main():
-    from config import DEVICE
-
     print("=" * 68)
     print("  Federated Learning com Concept Drift — Spam de E-mail")
     print("  Dataset sintético | 20 features | spam/ham")
@@ -52,6 +48,8 @@ def main():
 
     pools = build_data_pools()
     print(f"[INFO] Datasets gerados ({N_TRAIN} treino / {N_TEST} teste por fase).")
+
+    print(pools)
 
     histories = {
         "FL Padrão": run_scenario("FL Padrão", *make_standard_fns(pools)),

@@ -25,15 +25,15 @@ def local_train(global_model: nn.Module, dataset: TensorDataset, epochs: int, lr
     model = deepcopy(global_model).to(DEVICE)
     model.train()
 
-    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss()
 
     for _ in range(epochs):
-        for X_b, y_b in loader:
-            X_b, y_b = X_b.to(DEVICE), y_b.to(DEVICE)
+        for x_b, y_b in loader:
+            x_b, y_b = x_b.to(DEVICE), y_b.to(DEVICE)
             optimizer.zero_grad()
-            criterion(model(X_b), y_b).backward()
+            criterion(model(x_b), y_b).backward()
             optimizer.step()
 
     return model.state_dict(), len(dataset)
@@ -68,11 +68,11 @@ def evaluate(model: nn.Module, dataset: TensorDataset) -> tuple[float, float]:
         (accuracy %, f1-score %) — ambos em percentual.
     """
     model.eval()
-    loader = DataLoader(dataset, batch_size=256, shuffle=False)
+    loader = DataLoader(dataset, batch_size=256, shuffle=False, num_workers=0)
 
     all_preds, all_labels = [], []
-    for X_b, y_b in loader:
-        preds = model(X_b.to(DEVICE)).argmax(dim=1).cpu().numpy()
+    for x_b, y_b in loader:
+        preds = model(x_b.to(DEVICE)).argmax(dim=1).cpu().numpy()
         all_preds.extend(preds)
         all_labels.extend(y_b.numpy())
 

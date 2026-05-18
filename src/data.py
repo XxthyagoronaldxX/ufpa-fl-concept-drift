@@ -37,6 +37,7 @@ Perfis de spam:
 import numpy as np
 import torch
 from torch.utils.data import TensorDataset
+from utils.generator_util import GeneratorUtil
 
 from config import FEATURE_DIM, SPAM_RATIO
 
@@ -71,35 +72,35 @@ FEATURE_NAMES = [
 def _ham_features(n: int) -> np.ndarray:
     """Features de e-mails legítimos (ham)."""
     x = np.zeros((n, FEATURE_DIM), dtype=np.float32)
-    x[:, 0:10] = np.random.exponential(0.05, (n, 10))  # palavras-spam raras
-    x[:, 10] = np.random.poisson(1.5, n)  # poucos links
-    x[:, 11] = np.random.poisson(0.5, n)  # raramente "!"
-    x[:, 12] = np.clip(np.random.normal(0.50, 0.15, n), 0, 1)
-    x[:, 13] = np.clip(np.random.normal(0.05, 0.03, n), 0, 1)
-    x[:, 14] = np.random.binomial(1, 0.70, n)  # geralmente tem unsubscribe
-    x[:, 15] = np.random.binomial(1, 0.05, n)
-    x[:, 16] = np.random.binomial(1, 0.30, n)
-    x[:, 17] = np.random.poisson(0.8, n)
-    x[:, 18] = np.random.binomial(1, 0.80, n)  # remetente conhecido
-    x[:, 19] = np.random.binomial(1, 0.02, n)
+    x[:, 0:10] = GeneratorUtil.exponential(0.05, (n, 10))  # palavras-spam raras
+    x[:, 10] = GeneratorUtil.poisson(1.5, n)  # poucos links
+    x[:, 11] = GeneratorUtil.poisson(0.5, n)  # raramente "!"
+    x[:, 12] = np.clip(GeneratorUtil.normal(0.50, 0.15, n), 0, 1)
+    x[:, 13] = np.clip(GeneratorUtil.normal(0.05, 0.03, n), 0, 1)
+    x[:, 14] = GeneratorUtil.binomial(1, 0.70, n)  # geralmente tem unsubscribe
+    x[:, 15] = GeneratorUtil.binomial(1, 0.05, n)
+    x[:, 16] = GeneratorUtil.binomial(1, 0.30, n)
+    x[:, 17] = GeneratorUtil.poisson(0.8, n)
+    x[:, 18] = GeneratorUtil.binomial(1, 0.80, n)  # remetente conhecido
+    x[:, 19] = GeneratorUtil.binomial(1, 0.02, n)
     return x
 
 
 def _spam_phase_a(n: int) -> np.ndarray:
     """Spam clássico — abusa de free/win/prize/click/offer (features 0–4)."""
     x = np.zeros((n, FEATURE_DIM), dtype=np.float32)
-    x[:, 0:5] = np.random.exponential(1.2, (n, 5))  # palavras clássicas altas
-    x[:, 5:10] = np.random.exponential(0.05, (n, 5))  # palavras modernas baixas
-    x[:, 10] = np.random.poisson(8, n)
-    x[:, 11] = np.random.poisson(5, n)
-    x[:, 12] = np.clip(np.random.normal(0.70, 0.15, n), 0, 1)
-    x[:, 13] = np.clip(np.random.normal(0.35, 0.10, n), 0, 1)
-    x[:, 14] = np.random.binomial(1, 0.20, n)
-    x[:, 15] = np.random.binomial(1, 0.75, n)
-    x[:, 16] = np.random.binomial(1, 0.85, n)
-    x[:, 17] = np.random.poisson(5, n)
-    x[:, 18] = np.random.binomial(1, 0.05, n)
-    x[:, 19] = np.random.binomial(1, 0.70, n)
+    x[:, 0:5] = GeneratorUtil.exponential(1.2, (n, 5))  # palavras clássicas altas
+    x[:, 5:10] = GeneratorUtil.exponential(0.05, (n, 5))  # palavras modernas baixas
+    x[:, 10] = GeneratorUtil.poisson(8, n)
+    x[:, 11] = GeneratorUtil.poisson(5, n)
+    x[:, 12] = np.clip(GeneratorUtil.normal(0.70, 0.15, n), 0, 1)
+    x[:, 13] = np.clip(GeneratorUtil.normal(0.35, 0.10, n), 0, 1)
+    x[:, 14] = GeneratorUtil.binomial(1, 0.20, n)
+    x[:, 15] = GeneratorUtil.binomial(1, 0.75, n)
+    x[:, 16] = GeneratorUtil.binomial(1, 0.85, n)
+    x[:, 17] = GeneratorUtil.poisson(5, n)
+    x[:, 18] = GeneratorUtil.binomial(1, 0.05, n)
+    x[:, 19] = GeneratorUtil.binomial(1, 0.70, n)
     return x
 
 
@@ -110,18 +111,18 @@ def _spam_phase_b(n: int) -> np.ndarray:
     o modelo a aprender as novas palavras-chave, tornando o drift visível.
     """
     x = np.zeros((n, FEATURE_DIM), dtype=np.float32)
-    x[:, 0:5] = np.random.exponential(0.05, (n, 5))  # palavras clássicas baixas
-    x[:, 5:10] = np.random.exponential(1.2, (n, 5))  # palavras modernas altas
-    x[:, 10] = np.random.poisson(1.8, n)  # poucos links (≈ ham=1.5)
-    x[:, 11] = np.random.poisson(0.6, n)  # raramente "!" (≈ ham=0.5)
-    x[:, 12] = np.clip(np.random.normal(0.52, 0.15, n), 0, 1)
-    x[:, 13] = np.clip(np.random.normal(0.07, 0.03, n), 0, 1)
-    x[:, 14] = np.random.binomial(1, 0.60, n)
-    x[:, 15] = np.random.binomial(1, 0.35, n)
-    x[:, 16] = np.random.binomial(1, 0.35, n)
-    x[:, 17] = np.random.poisson(0.9, n)
-    x[:, 18] = np.random.binomial(1, 0.40, n)
-    x[:, 19] = np.random.binomial(1, 0.10, n)
+    x[:, 0:5] = GeneratorUtil.exponential(0.05, (n, 5))  # palavras clássicas baixas
+    x[:, 5:10] = GeneratorUtil.exponential(1.2, (n, 5))  # palavras modernas altas
+    x[:, 10] = GeneratorUtil.poisson(1.8, n)  # poucos links (≈ ham=1.5)
+    x[:, 11] = GeneratorUtil.poisson(0.6, n)  # raramente "!" (≈ ham=0.5)
+    x[:, 12] = np.clip(GeneratorUtil.normal(0.52, 0.15, n), 0, 1)
+    x[:, 13] = np.clip(GeneratorUtil.normal(0.07, 0.03, n), 0, 1)
+    x[:, 14] = GeneratorUtil.binomial(1, 0.60, n)
+    x[:, 15] = GeneratorUtil.binomial(1, 0.35, n)
+    x[:, 16] = GeneratorUtil.binomial(1, 0.35, n)
+    x[:, 17] = GeneratorUtil.poisson(0.9, n)
+    x[:, 18] = GeneratorUtil.binomial(1, 0.40, n)
+    x[:, 19] = GeneratorUtil.binomial(1, 0.10, n)
     return x
 
 
@@ -180,7 +181,7 @@ def make_dataset(n: int, spam_phase: str = "A", alpha: float = 0.0) -> TensorDat
     X = np.vstack([ham_x, spam_x]).astype(np.float32)
     y = np.array([0] * n_ham + [1] * n_spam, dtype=np.int64)
 
-    idx = np.random.permutation(n)
+    idx = GeneratorUtil.permutation(n)
     X, y = X[idx], y[idx]
     X = _normalize(X).clip(0, 1)
 
@@ -191,7 +192,8 @@ def split_iid(dataset: TensorDataset, num_clients: int) -> list:
     """Divide o dataset de forma IID entre os clientes."""
     X, y = dataset.tensors
     n = len(y)
-    idx = np.random.permutation(n)
+
+    idx = GeneratorUtil.permutation(n)
     chunk = n // num_clients
     return [
         TensorDataset(

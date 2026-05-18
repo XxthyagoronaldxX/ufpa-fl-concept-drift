@@ -52,9 +52,9 @@ def build_data_pools() -> dict:
     return {
         "clients_A": clients_a,
         "clients_B": clients_b,
-        "gradual_train": gradual_train,
         "test_A": test_a,
         "test_B": test_b,
+        "gradual_train": gradual_train,
         "gradual_test": gradual_test,
     }
 
@@ -169,5 +169,8 @@ def run_scenario(name: str, get_train_fn, get_test_fn) -> tuple[list, list]:
         acc, f1 = evaluate(model, get_test_fn(rnd))
         acc_hist.append(acc)
         f1_hist.append(f1)
+
+        note = _drift_note(name, rnd)
+        print(f"  {rnd:>7d}  │  {acc:>6.1f}%  │  {f1:>6.1f}%  │  {note}")
 
     return acc_hist, f1_hist
