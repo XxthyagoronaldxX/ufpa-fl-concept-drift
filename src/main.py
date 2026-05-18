@@ -49,8 +49,6 @@ def main():
     pools = build_data_pools()
     print(f"[INFO] Datasets gerados ({N_TRAIN} treino / {N_TEST} teste por fase).")
 
-    print(pools)
-
     histories = {
         "FL Padrão": run_scenario("FL Padrão", *make_standard_fns(pools)),
         "Drift Súbito": run_scenario("FL Drift Súbito", *make_sudden_fns(pools)),
