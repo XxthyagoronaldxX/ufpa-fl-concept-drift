@@ -17,7 +17,7 @@ na fase B (spam furtivo).
 from config import DRIFT_ROUND, NUM_ROUNDS, CYCLE_LEN, N_TRAIN, N_TEST, NUM_CLIENTS, DEVICE, LEARNING_RATE, LOCAL_EPOCHS
 from data import make_dataset, split_iid
 from model import SpamMLP
-from federated import local_train, fed_avg, evaluate, DriftDetector
+from federated import local_train, fed_avg, evaluate
 
 # ── Preparação dos pools de dados ────────────────────────────────────────────
 
@@ -138,24 +138,13 @@ def _drift_note(scenario: str, rnd: int) -> str:
 # ── Loop principal de FL ─────────────────────────────────────────────────────
 
 
-def run_scenario(
-    name: str,
-    get_train_fn,
-    get_test_fn,
-    detector: DriftDetector | None = None,
-    boost_lr_factor: float = 1.0,
-    boost_rounds: int = 0,
-) -> tuple[list, list]:
+def run_scenario(name: str, get_train_fn, get_test_fn) -> tuple[list, list]:
     """Executa NUM_ROUNDS de FL e retorna históricos de acurácia e F1.
 
     Args:
         name:            Identificador do cenário (usado no log).
         get_train_fn:    callable(rnd) → list[TensorDataset]
         get_test_fn:     callable(rnd) → TensorDataset
-        detector:        DriftDetector opcional; quando fornecido, activa
-                         o modo adaptativo (reset de camada + LR boost).
-        boost_lr_factor: multiplicador de LR após detecção de drift.
-        boost_rounds:    rodadas com LR elevada após detecção.
 
     Returns:
         (acc_history, f1_history) — listas com um valor por rodada.
@@ -163,7 +152,6 @@ def run_scenario(
     model = SpamMLP().to(DEVICE)
     acc_hist, f1_hist = [], []
     current_lr = LEARNING_RATE
-    boost_remaining = 0
 
     print(f"\n{'═' * 64}")
     print(f"  Cenário: {name}")
@@ -181,25 +169,5 @@ def run_scenario(
         acc, f1 = evaluate(model, get_test_fn(rnd))
         acc_hist.append(acc)
         f1_hist.append(f1)
-
-        note = _drift_note(name, rnd)
-
-        # ── Lógica adaptativa ────────────────────────────────────────────────
-        if detector is not None:
-            drift_found = detector.update(acc)
-            if drift_found and boost_remaining == 0:
-                # Reinicia última camada do modelo global e eleva LR
-                model.net[-1].reset_parameters()
-                boost_remaining = boost_rounds
-                current_lr = LEARNING_RATE * boost_lr_factor
-                note = f"◄ DRIFT DETECTADO — reset camada + LR×{boost_lr_factor:.0f}"
-                detector.reset_peak()
-            elif boost_remaining > 0:
-                boost_remaining -= 1
-                if boost_remaining == 0:
-                    current_lr = LEARNING_RATE
-                note = f"adaptação activa ({boost_remaining + 1} rod. restantes)"
-
-        print(f"  {rnd:>7d}  │  {acc:>6.1f}%  │  {f1:>6.1f}%  │  {note}")
 
     return acc_hist, f1_hist

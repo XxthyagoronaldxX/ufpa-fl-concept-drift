@@ -72,3 +72,8 @@ O F1-score é uma métrica que avalia o equilíbrio entre precisão (quantos dos
 - SPAM_RATIO: Proporção de e-mails de spam no dataset.
 
 - DEVICE: Define se o código vai rodar na GPU (se disponível) ou na CPU.
+
+# A diferença principal entre o Grafo de Acurácia e de F1-Score.
+
+Acurácia mostra a porcentagem total de acertos do modelo (quantos e-mails ele classificou corretamente, sejam spam ou ham).
+F1-score avalia o equilíbrio entre precisão e revocação, focando na qualidade da detecção de spam (especialmente importante quando as classes estão desbalanceadas). Classes desbalanceadas significam que há muito mais exemplos de uma categoria do que de outra. No caso de spam, é comum ter muito mais e-mails legítimos do que spams. Isso pode enganar a acurácia e dificultar a detecção dos casos raros, como o spam.
