@@ -20,6 +20,9 @@ import warnings
 import numpy as np
 import torch
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import SEED, DRIFT_ROUND, N_TRAIN, N_TEST, DEVICE
@@ -31,7 +34,7 @@ from scenarios import (
     make_recurrent_fns,
     run_scenario,
 )
-from visualization import plot_results, print_summary
+from visualization import plot_results, plot_separated_results, print_summary
 
 warnings.filterwarnings("ignore")
 
@@ -50,14 +53,18 @@ def main():
     print(f"[INFO] Datasets gerados ({N_TRAIN} treino / {N_TEST} teste por fase).")
 
     histories = {
-        "FL Padrão": run_scenario("FL Padrão", *make_standard_fns(pools)),
-        "Drift Súbito": run_scenario("FL Drift Súbito", *make_sudden_fns(pools)),
-        "Drift Gradual": run_scenario("FL Drift Gradual", *make_gradual_fns(pools)),
-        "Drift Recorrente": run_scenario("FL Drift Recorrente", *make_recurrent_fns(pools)),
+        "FL Padrão": run_scenario("FL Padrão", *make_standard_fns(pools), enable_correction=False),
+        "Súbito sem correção": run_scenario("FL Drift Súbito — sem correção", *make_sudden_fns(pools), enable_correction=False),
+        "Súbito com correção": run_scenario("FL Drift Súbito — com correção", *make_sudden_fns(pools), enable_correction=True),
+        "Gradual sem correção": run_scenario("FL Drift Gradual — sem correção", *make_gradual_fns(pools), enable_correction=False),
+        "Gradual com correção": run_scenario("FL Drift Gradual — com correção", *make_gradual_fns(pools), enable_correction=True),
+        "Recorrente sem correção": run_scenario("FL Drift Recorrente — sem correção", *make_recurrent_fns(pools), enable_correction=False),
+        "Recorrente com correção": run_scenario("FL Drift Recorrente — com correção", *make_recurrent_fns(pools), enable_correction=True),
     }
 
     print_summary(histories, DRIFT_ROUND)
     plot_results(histories, DRIFT_ROUND)
+    plot_separated_results(histories, DRIFT_ROUND)
 
 
 if __name__ == "__main__":

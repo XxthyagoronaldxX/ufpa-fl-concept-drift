@@ -14,10 +14,31 @@ visível o impacto do drift: o modelo treinado na fase A falha ao ser avaliado
 na fase B (spam furtivo).
 """
 
+import importlib.util
+import os
+import sys
+
 from config import DRIFT_ROUND, NUM_ROUNDS, CYCLE_LEN, N_TRAIN, N_TEST, NUM_CLIENTS, DEVICE, LEARNING_RATE, LOCAL_EPOCHS
 from data import make_dataset, split_iid
 from model import SpamMLP
 from federated import local_train, fed_avg, evaluate
+
+
+def _load_local_module(module_name: str, filename: str):
+    """Carrega módulos locais cujos arquivos têm hífen no nome."""
+    path = os.path.join(os.path.dirname(__file__), filename)
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_drift_detector_module = _load_local_module("drift_detector", "drift-detector.py")
+_drift_correction_module = _load_local_module("drift_correction", "drift-correction.py")
+
+build_drift_detector = _drift_detector_module.build_drift_detector
+build_drift_corrector = _drift_correction_module.build_drift_corrector
 
 # ── Preparação dos pools de dados ────────────────────────────────────────────
 
@@ -138,39 +159,54 @@ def _drift_note(scenario: str, rnd: int) -> str:
 # ── Loop principal de FL ─────────────────────────────────────────────────────
 
 
-def run_scenario(name: str, get_train_fn, get_test_fn) -> tuple[list, list]:
+def run_scenario(name: str, get_train_fn, get_test_fn, enable_correction: bool = True) -> tuple[list, list]:
     """Executa NUM_ROUNDS de FL e retorna históricos de acurácia e F1.
 
     Args:
-        name:            Identificador do cenário (usado no log).
-        get_train_fn:    callable(rnd) → list[TensorDataset]
-        get_test_fn:     callable(rnd) → TensorDataset
+        name:              Identificador do cenário (usado no log).
+        get_train_fn:      callable(rnd) → list[TensorDataset]
+        get_test_fn:       callable(rnd) → TensorDataset
+        enable_correction: aplica correções adaptativas quando um drift é detectado.
 
     Returns:
         (acc_history, f1_history) — listas com um valor por rodada.
     """
     model = SpamMLP().to(DEVICE)
     acc_hist, f1_hist = [], []
-    current_lr = LEARNING_RATE
+    detector = build_drift_detector()
+    corrector = build_drift_corrector()
+    correction_state = _drift_correction_module.CorrectionState(False, LEARNING_RATE, LOCAL_EPOCHS)
 
     print(f"\n{'═' * 64}")
     print(f"  Cenário: {name}")
     print(f"{'═' * 64}")
     print(f"  {'Rodada':>7}  │  {'Acc':>7}  │  {'F1':>7}  │  Observação")
-    print(f"  {'-' * 58}")
+    print(f"  {'-' * 82}")
 
     for rnd in range(1, NUM_ROUNDS + 1):
         # Treino local + agregação FedAvg
         client_datasets = get_train_fn(rnd)
-        updates = [local_train(model, ds, LOCAL_EPOCHS, current_lr) for ds in client_datasets]
+        train_datasets = corrector.apply_replay(client_datasets, correction_state.replay_ratio) if enable_correction and correction_state.active else client_datasets
+        updates = [local_train(model, ds, correction_state.local_epochs, correction_state.learning_rate) for ds in train_datasets]
         model.load_state_dict(fed_avg(model.state_dict(), updates))
 
         # Avaliação no dataset de teste da rodada atual
-        acc, f1 = evaluate(model, get_test_fn(rnd))
+        test_dataset = get_test_fn(rnd)
+        acc, f1 = evaluate(model, test_dataset)
         acc_hist.append(acc)
         f1_hist.append(f1)
 
-        note = _drift_note(name, rnd)
+        detection = detector.update(rnd, acc, f1, test_dataset)
+        next_correction_state = corrector.update(detection) if enable_correction else _drift_correction_module.CorrectionState(False, LEARNING_RATE, LOCAL_EPOCHS)
+        corrector.remember(client_datasets)
+
+        notes = [_drift_note(name, rnd)]
+        if detection.detected:
+            notes.append(f"DETECTADO {detection.severity}: {detection.message}")
+        if enable_correction and correction_state.active:
+            notes.append(correction_state.message)
+        note = " | ".join(note for note in notes if note)
         print(f"  {rnd:>7d}  │  {acc:>6.1f}%  │  {f1:>6.1f}%  │  {note}")
+        correction_state = next_correction_state
 
     return acc_hist, f1_hist
