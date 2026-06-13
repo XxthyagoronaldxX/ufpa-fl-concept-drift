@@ -1,16 +1,10 @@
-"""
-model.py
-────────
-Arquitetura MLP para classificação binária spam / ham.
-"""
-
 import torch.nn as nn
 
 from config import FEATURE_DIM
 
 
-class SpamMLP(nn.Module):
-    """MLP de duas camadas ocultas para detecção de spam."""
+class WindPowerMLP(nn.Module):
+    """Regressor da potência eólica normalizada (saída em [0, 1])."""
 
     def __init__(self, input_dim: int = FEATURE_DIM):
         super().__init__()
@@ -21,7 +15,8 @@ class SpamMLP(nn.Module):
             nn.Linear(64, 32),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(32, 2),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
         )
 
     def forward(self, x):

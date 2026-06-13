@@ -1,27 +1,39 @@
 """
 scenarios.py
 ────────────
-Definição dos quatro cenários de Federated Learning e execução por rodada.
+Definição dos cenários de Federated Learning e execução por rodada,
+aplicados a previsão de potência eólica.
 
-Cenários:
-  1. FL Padrão       — distribuição estacionária (sem drift)
-  2. Drift Súbito    — spammers mudam de tática abruptamente na rodada DRIFT_ROUND
-  3. Drift Gradual   — transição progressiva para novas táticas de spam
-  4. Drift Recorrente — padrões de spam alternam ciclicamente (A → B → A → B …)
+Cenários (eixo de drift = sazonal):
+  1. FL Padrão       — distribuição estacionária (somente verão)
+  2. Drift Recorrente — alterna verão ↔ inverno em ciclos de CYCLE_LEN rodadas
 
-O dataset de teste acompanha a distribuição vigente em cada rodada, tornando
-visível o impacto do drift: o modelo treinado na fase A falha ao ser avaliado
-na fase B (spam furtivo).
+A alternância recorrente é o único padrão fiel à natureza cíclica das estações
+do ano; cenários de drift súbito ou unidirecional gradual não condizem com a
+realidade meteorológica adotada como eixo de drift.
+
+Cada cliente federado corresponde a uma das 4 localizações do dataset
+(Location1..Location4) — federação não-IID. O dataset de teste de cada rodada
+acompanha a distribuição vigente, tornando visível o impacto do drift.
 """
 
 import importlib.util
 import os
 import sys
 
-from config import DRIFT_ROUND, NUM_ROUNDS, CYCLE_LEN, N_TRAIN, N_TEST, NUM_CLIENTS, DEVICE, LEARNING_RATE, LOCAL_EPOCHS
-from data import make_dataset, split_iid
-from model import SpamMLP
-from federated import local_train, fed_avg, evaluate
+from config import (
+    CYCLE_LEN,
+    DEVICE,
+    DRIFT_ROUND,
+    LEARNING_RATE,
+    LOCAL_EPOCHS,
+    NUM_ROUNDS,
+    SUMMER_MONTHS,
+    WINTER_MONTHS,
+)
+from data import build_seasonal_pools
+from federated_service import FederatedService
+from model import WindPowerMLP
 
 
 def _load_local_module(module_name: str, filename: str):
@@ -40,51 +52,25 @@ _drift_correction_module = _load_local_module("drift_correction", "drift-correct
 build_drift_detector = _drift_detector_module.build_drift_detector
 build_drift_corrector = _drift_correction_module.build_drift_corrector
 
+
 # ── Preparação dos pools de dados ────────────────────────────────────────────
 
 
 def build_data_pools() -> dict:
-    """Pré-gera todos os datasets de treino e teste necessários.
+    """Pré-gera os pools de treino/teste (verão e inverno).
 
-    Returns:
-        Dicionário com as chaves:
-        - "clients_A", "clients_B": listas de datasets por cliente
-        - "gradual_train": dict {rodada: lista de datasets}
-        - "test_A", "test_B": datasets de teste fixos
-        - "gradual_test": dict {rodada: dataset}
+    A chave "clients_A" representa o pool de verão (JJA) e "clients_B" o pool
+    de inverno (DJF). Os nomes A/B são mantidos como rótulos neutros para
+    compatibilidade com os seletores do experimento.
     """
-    n_drift_rounds = NUM_ROUNDS - DRIFT_ROUND + 1
-
-    clients_a = split_iid(make_dataset(N_TRAIN, spam_phase="A"), NUM_CLIENTS)
-    clients_b = split_iid(make_dataset(N_TRAIN, spam_phase="B"), NUM_CLIENTS)
-
-    gradual_train = {
-        rnd: split_iid(
-            make_dataset(N_TRAIN, spam_phase="mixed", alpha=min(1.0, (rnd - DRIFT_ROUND + 1) / n_drift_rounds)),
-            NUM_CLIENTS,
-        )
-        for rnd in range(DRIFT_ROUND, NUM_ROUNDS + 1)
-    }
-
-    test_a = make_dataset(N_TEST, spam_phase="A")
-    test_b = make_dataset(N_TEST, spam_phase="B")
-    gradual_test = {rnd: make_dataset(N_TEST, spam_phase="mixed", alpha=min(1.0, (rnd - DRIFT_ROUND + 1) / n_drift_rounds)) for rnd in range(DRIFT_ROUND, NUM_ROUNDS + 1)}
-
-    return {
-        "clients_A": clients_a,
-        "clients_B": clients_b,
-        "test_A": test_a,
-        "test_B": test_b,
-        "gradual_train": gradual_train,
-        "gradual_test": gradual_test,
-    }
+    return build_seasonal_pools(SUMMER_MONTHS, WINTER_MONTHS)
 
 
 # ── Seletores de dados por rodada ────────────────────────────────────────────
 
 
 def make_standard_fns(pools: dict):
-    """Cenário 1 — sem drift: distribuição A em todas as rodadas."""
+    """Cenário 1 — sem drift: somente verão (distribuição estacionária)."""
 
     def get_train(rnd):
         return pools["clients_A"]
@@ -95,32 +81,8 @@ def make_standard_fns(pools: dict):
     return get_train, get_test
 
 
-def make_sudden_fns(pools: dict):
-    """Cenário 2 — drift súbito: muda de A para B na rodada DRIFT_ROUND."""
-
-    def get_train(rnd):
-        return pools["clients_A"] if rnd < DRIFT_ROUND else pools["clients_B"]
-
-    def get_test(rnd):
-        return pools["test_A"] if rnd < DRIFT_ROUND else pools["test_B"]
-
-    return get_train, get_test
-
-
-def make_gradual_fns(pools: dict):
-    """Cenário 3 — drift gradual: mistura A→B progressivamente."""
-
-    def get_train(rnd):
-        return pools["clients_A"] if rnd < DRIFT_ROUND else pools["gradual_train"][rnd]
-
-    def get_test(rnd):
-        return pools["test_A"] if rnd < DRIFT_ROUND else pools["gradual_test"][rnd]
-
-    return get_train, get_test
-
-
 def make_recurrent_fns(pools: dict):
-    """Cenário 4 — drift recorrente: alterna A ↔ B em ciclos de CYCLE_LEN rodadas."""
+    """Cenário 2 — drift recorrente: alterna verão ↔ inverno em ciclos de CYCLE_LEN."""
 
     def _phase(rnd: int) -> str:
         pos = (rnd - DRIFT_ROUND) % (2 * CYCLE_LEN)
@@ -144,14 +106,9 @@ def make_recurrent_fns(pools: dict):
 
 def _drift_note(scenario: str, rnd: int) -> str:
     """Retorna uma nota descritiva sobre o drift na rodada atual."""
-    if "Súbito" in scenario and rnd == DRIFT_ROUND:
-        return "◄ DRIFT SÚBITO — spammers mudam para crypto/phishing"
-    if "Gradual" in scenario and rnd >= DRIFT_ROUND:
-        alpha = min(1.0, (rnd - DRIFT_ROUND + 1) / (NUM_ROUNDS - DRIFT_ROUND + 1))
-        return f"gradual α={alpha:.2f} ({int(alpha * 100)}% fase B)"
     if "Recorrente" in scenario and rnd >= DRIFT_ROUND:
         pos = (rnd - DRIFT_ROUND) % (2 * CYCLE_LEN)
-        phase = "B (moderno)" if pos < CYCLE_LEN else "A (clássico)"
+        phase = "inverno" if pos < CYCLE_LEN else "verão"
         return f"ciclo — fase {phase}"
     return ""
 
@@ -160,7 +117,7 @@ def _drift_note(scenario: str, rnd: int) -> str:
 
 
 def run_scenario(name: str, get_train_fn, get_test_fn, enable_correction: bool = True) -> tuple[list, list]:
-    """Executa NUM_ROUNDS de FL e retorna históricos de acurácia e F1.
+    """Executa NUM_ROUNDS de FL e retorna históricos de MAE e RMSE.
 
     Args:
         name:              Identificador do cenário (usado no log).
@@ -169,10 +126,10 @@ def run_scenario(name: str, get_train_fn, get_test_fn, enable_correction: bool =
         enable_correction: aplica correções adaptativas quando um drift é detectado.
 
     Returns:
-        (acc_history, f1_history) — listas com um valor por rodada.
+        (mae_history, rmse_history) — listas com um valor por rodada (em p.p. de Power).
     """
-    model = SpamMLP().to(DEVICE)
-    acc_hist, f1_hist = [], []
+    model = WindPowerMLP().to(DEVICE)
+    mae_hist, rmse_hist = [], []
     detector = build_drift_detector()
     corrector = build_drift_corrector()
     correction_state = _drift_correction_module.CorrectionState(False, LEARNING_RATE, LOCAL_EPOCHS)
@@ -180,23 +137,23 @@ def run_scenario(name: str, get_train_fn, get_test_fn, enable_correction: bool =
     print(f"\n{'═' * 64}")
     print(f"  Cenário: {name}")
     print(f"{'═' * 64}")
-    print(f"  {'Rodada':>7}  │  {'Acc':>7}  │  {'F1':>7}  │  Observação")
-    print(f"  {'-' * 82}")
+    print(f"  {'Rodada':>7}  │  {'MAE':>7}  │  {'RMSE':>7}  │  {'R²':>6}  │  Observação")
+    print(f"  {'-' * 92}")
 
     for rnd in range(1, NUM_ROUNDS + 1):
         # Treino local + agregação FedAvg
         client_datasets = get_train_fn(rnd)
         train_datasets = corrector.apply_replay(client_datasets, correction_state.replay_ratio) if enable_correction and correction_state.active else client_datasets
-        updates = [local_train(model, ds, correction_state.local_epochs, correction_state.learning_rate) for ds in train_datasets]
-        model.load_state_dict(fed_avg(model.state_dict(), updates))
+        updates = [FederatedService.local_train(model, ds, correction_state.local_epochs, correction_state.learning_rate) for ds in train_datasets]
+        model.load_state_dict(FederatedService.fed_avg(model.state_dict(), updates))
 
         # Avaliação no dataset de teste da rodada atual
         test_dataset = get_test_fn(rnd)
-        acc, f1 = evaluate(model, test_dataset)
-        acc_hist.append(acc)
-        f1_hist.append(f1)
+        mae, rmse, r2 = FederatedService.evaluate(model, test_dataset)
+        mae_hist.append(mae)
+        rmse_hist.append(rmse)
 
-        detection = detector.update(rnd, acc, f1, test_dataset)
+        detection = detector.update(rnd, mae, rmse, test_dataset)
         next_correction_state = corrector.update(detection) if enable_correction else _drift_correction_module.CorrectionState(False, LEARNING_RATE, LOCAL_EPOCHS)
         corrector.remember(client_datasets)
 
@@ -206,7 +163,7 @@ def run_scenario(name: str, get_train_fn, get_test_fn, enable_correction: bool =
         if enable_correction and correction_state.active:
             notes.append(correction_state.message)
         note = " | ".join(note for note in notes if note)
-        print(f"  {rnd:>7d}  │  {acc:>6.1f}%  │  {f1:>6.1f}%  │  {note}")
+        print(f"  {rnd:>7d}  │  {mae:>6.2f}%  │  {rmse:>6.2f}%  │  {r2:>6.3f}  │  {note}")
         correction_state = next_correction_state
 
-    return acc_hist, f1_hist
+    return mae_hist, rmse_hist

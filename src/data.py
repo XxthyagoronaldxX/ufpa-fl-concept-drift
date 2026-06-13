@@ -1,214 +1,179 @@
 """
 data.py
 ───────
-Geração de dados sintéticos de e-mail (spam/ham) e utilitários de dataset.
+Carregamento dos CSVs reais de geração de energia eólica e construção de
+pools federados por estação do ano.
 
-Features (20 dimensões):
-  Idx  Nome               Descrição
-  ─── ──────────────────  ────────────────────────────────────────────────
-   0  word_free           Frequência de "free"
-   1  word_win            Frequência de "win"
-   2  word_prize          Frequência de "prize"
-   3  word_click          Frequência de "click here"
-   4  word_offer          Frequência de "limited offer"
-   5  word_crypto         Frequência de "crypto/bitcoin"
-   6  word_investment     Frequência de "investment opportunity"
-   7  word_profit         Frequência de "profit/return"
-   8  word_urgent         Frequência de "urgent/act now"
-   9  word_verify         Frequência de "verify your account"
-  10  num_links           Quantidade de links no corpo
-  11  num_exclamation     Quantidade de "!"
-  12  email_length        Comprimento normalizado do e-mail
-  13  caps_ratio          Proporção de letras maiúsculas
-  14  has_unsubscribe     Possui link de descadastro (0/1)
-  15  reply_to_diff       Reply-To diferente do remetente (0/1)
-  16  html_heavy          E-mail com muito HTML/CSS inline (0/1)
-  17  num_images          Quantidade de imagens embutidas
-  18  sender_known        Remetente está na lista de contatos (0/1)
-  19  subject_all_caps    Assunto todo em maiúsculas (0/1)
+Dataset (4 locais, hora-a-hora, 2017–2021):
+  Time, temperature_2m, relativehumidity_2m, dewpoint_2m,
+  windspeed_10m, windspeed_100m, winddirection_10m, winddirection_100m,
+  windgusts_10m, Power (alvo, normalizado em [0, 1]).
 
-Perfis de spam:
-  Fase A — clássico : abusa das features 0–4  (free/win/prize)
-  Fase B — moderno  : abusa das features 5–9  (crypto/phishing), estrutura
-                      propositalmente próxima ao ham para forçar o modelo a
-                      aprender as novas palavras-chave, tornando o drift visível.
+Engenharia de atributos (10 colunas finais):
+  temperature_2m, relativehumidity_2m, dewpoint_2m,
+  windspeed_10m, windspeed_100m, windgusts_10m,
+  winddir_10m_sin, winddir_10m_cos, winddir_100m_sin, winddir_100m_cos.
+
+Cada cliente federado corresponde a um local (Location1..Location4),
+caracterizando uma federação não-IID. Concept drift é simulado pelo eixo
+sazonal (verão JJA ↔ inverno DJF), conforme o artigo em
+[data/readme-artig.md](data/readme-artig.md).
 """
 
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import TensorDataset
-from utils.generator_util import GeneratorUtil
 
-from config import FEATURE_DIM, SPAM_RATIO
+from config import DATA_DIR, FEATURE_DIM, NUM_CLIENTS, TRAIN_FRACTION
 
-# ── Nomes das features ───────────────────────────────────────────────────────
 FEATURE_NAMES = [
-    "word_free",
-    "word_win",
-    "word_prize",
-    "word_click",
-    "word_offer",
-    "word_crypto",
-    "word_investment",
-    "word_profit",
-    "word_urgent",
-    "word_verify",
-    "num_links",
-    "num_exclamation",
-    "email_length",
-    "caps_ratio",
-    "has_unsubscribe",
-    "reply_to_diff",
-    "html_heavy",
-    "num_images",
-    "sender_known",
-    "subject_all_caps",
+    "temperature_2m",
+    "relativehumidity_2m",
+    "dewpoint_2m",
+    "windspeed_10m",
+    "windspeed_100m",
+    "windgusts_10m",
+    "winddir_10m_sin",
+    "winddir_10m_cos",
+    "winddir_100m_sin",
+    "winddir_100m_cos",
+]
+TARGET_NAME = "Power"
+
+_RAW_NUMERIC = [
+    "temperature_2m",
+    "relativehumidity_2m",
+    "dewpoint_2m",
+    "windspeed_10m",
+    "windspeed_100m",
+    "windgusts_10m",
 ]
 
 
-# ── Geradores de features brutas ─────────────────────────────────────────────
+@dataclass(frozen=True)
+class _Slice:
+    X: np.ndarray  # [N, FEATURE_DIM] float32 normalizado em [0,1]
+    y: np.ndarray  # [N, 1]           float32 já normalizado pelo dataset
 
 
-def _ham_features(n: int) -> np.ndarray:
-    """Features de e-mails legítimos (ham)."""
-    x = np.zeros((n, FEATURE_DIM), dtype=np.float32)
-    x[:, 0:10] = GeneratorUtil.exponential(0.05, (n, 10))  # palavras-spam raras
-    x[:, 10] = GeneratorUtil.poisson(1.5, n)  # poucos links
-    x[:, 11] = GeneratorUtil.poisson(0.5, n)  # raramente "!"
-    x[:, 12] = np.clip(GeneratorUtil.normal(0.50, 0.15, n), 0, 1)
-    x[:, 13] = np.clip(GeneratorUtil.normal(0.05, 0.03, n), 0, 1)
-    x[:, 14] = GeneratorUtil.binomial(1, 0.70, n)  # geralmente tem unsubscribe
-    x[:, 15] = GeneratorUtil.binomial(1, 0.05, n)
-    x[:, 16] = GeneratorUtil.binomial(1, 0.30, n)
-    x[:, 17] = GeneratorUtil.poisson(0.8, n)
-    x[:, 18] = GeneratorUtil.binomial(1, 0.80, n)  # remetente conhecido
-    x[:, 19] = GeneratorUtil.binomial(1, 0.02, n)
-    return x
+_loaded_locations: dict[int, dict[str, np.ndarray]] | None = None
+_feature_min: np.ndarray | None = None
+_feature_max: np.ndarray | None = None
 
 
-def _spam_phase_a(n: int) -> np.ndarray:
-    """Spam clássico — abusa de free/win/prize/click/offer (features 0–4)."""
-    x = np.zeros((n, FEATURE_DIM), dtype=np.float32)
-    x[:, 0:5] = GeneratorUtil.exponential(1.2, (n, 5))  # palavras clássicas altas
-    x[:, 5:10] = GeneratorUtil.exponential(0.05, (n, 5))  # palavras modernas baixas
-    x[:, 10] = GeneratorUtil.poisson(8, n)
-    x[:, 11] = GeneratorUtil.poisson(5, n)
-    x[:, 12] = np.clip(GeneratorUtil.normal(0.70, 0.15, n), 0, 1)
-    x[:, 13] = np.clip(GeneratorUtil.normal(0.35, 0.10, n), 0, 1)
-    x[:, 14] = GeneratorUtil.binomial(1, 0.20, n)
-    x[:, 15] = GeneratorUtil.binomial(1, 0.75, n)
-    x[:, 16] = GeneratorUtil.binomial(1, 0.85, n)
-    x[:, 17] = GeneratorUtil.poisson(5, n)
-    x[:, 18] = GeneratorUtil.binomial(1, 0.05, n)
-    x[:, 19] = GeneratorUtil.binomial(1, 0.70, n)
-    return x
+def _engineer(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Aplica sin/cos nas direções de vento e devolve (X bruto, y)."""
+    deg10 = np.deg2rad(df["winddirection_10m"].to_numpy(dtype=np.float32))
+    deg100 = np.deg2rad(df["winddirection_100m"].to_numpy(dtype=np.float32))
+
+    columns = [df[name].to_numpy(dtype=np.float32) for name in _RAW_NUMERIC]
+    columns.extend([np.sin(deg10), np.cos(deg10), np.sin(deg100), np.cos(deg100)])
+
+    X = np.stack(columns, axis=1).astype(np.float32)
+    y = df[TARGET_NAME].to_numpy(dtype=np.float32).reshape(-1, 1)
+    return X, y
 
 
-def _spam_phase_b(n: int) -> np.ndarray:
-    """Spam moderno furtivo — crypto/phishing (features 5–9 altas).
+def _load_all(data_dir: str) -> dict[int, dict[str, np.ndarray]]:
+    """Lê os 4 CSVs, faz engenharia de atributos e indexa pelo mês.
 
-    Estrutura (features 10-19) propositalmente próxima ao ham para forçar
-    o modelo a aprender as novas palavras-chave, tornando o drift visível.
+    Retorna: {loc_id: {"X": [N,FEATURE_DIM], "y": [N,1], "month": [N]}}.
+    Também ajusta os min/max globais (pool combinado) usados para escalar X.
     """
-    x = np.zeros((n, FEATURE_DIM), dtype=np.float32)
-    x[:, 0:5] = GeneratorUtil.exponential(0.05, (n, 5))  # palavras clássicas baixas
-    x[:, 5:10] = GeneratorUtil.exponential(1.2, (n, 5))  # palavras modernas altas
-    x[:, 10] = GeneratorUtil.poisson(1.8, n)  # poucos links (≈ ham=1.5)
-    x[:, 11] = GeneratorUtil.poisson(0.6, n)  # raramente "!" (≈ ham=0.5)
-    x[:, 12] = np.clip(GeneratorUtil.normal(0.52, 0.15, n), 0, 1)
-    x[:, 13] = np.clip(GeneratorUtil.normal(0.07, 0.03, n), 0, 1)
-    x[:, 14] = GeneratorUtil.binomial(1, 0.60, n)
-    x[:, 15] = GeneratorUtil.binomial(1, 0.35, n)
-    x[:, 16] = GeneratorUtil.binomial(1, 0.35, n)
-    x[:, 17] = GeneratorUtil.poisson(0.9, n)
-    x[:, 18] = GeneratorUtil.binomial(1, 0.40, n)
-    x[:, 19] = GeneratorUtil.binomial(1, 0.10, n)
-    return x
+    global _feature_min, _feature_max
+
+    locations: dict[int, dict[str, np.ndarray]] = {}
+    pooled: list[np.ndarray] = []
+    for loc_id in range(1, NUM_CLIENTS + 1):
+        path = os.path.join(data_dir, f"Location{loc_id}.csv")
+        df = pd.read_csv(path)
+        df["Time"] = pd.to_datetime(df["Time"])
+        month = df["Time"].dt.month.to_numpy(dtype=np.int8)
+        X_raw, y = _engineer(df)
+        locations[loc_id] = {"X_raw": X_raw, "y": y, "month": month}
+        pooled.append(X_raw)
+
+    pool = np.vstack(pooled)
+    _feature_min = pool.min(axis=0)
+    _feature_max = pool.max(axis=0)
+    span = (_feature_max - _feature_min) + 1e-8
+
+    for loc in locations.values():
+        scaled = (loc["X_raw"] - _feature_min) / span
+        loc["X"] = np.clip(scaled, 0.0, 1.0).astype(np.float32)
+        del loc["X_raw"]
+
+    if locations[1]["X"].shape[1] != FEATURE_DIM:
+        raise RuntimeError(f"Esperado FEATURE_DIM={FEATURE_DIM}, obtido {locations[1]['X'].shape[1]}")
+
+    return locations
 
 
-# ── Normalização global ──────────────────────────────────────────────────────
-# Calculada uma única vez a partir de amostras representativas de todas as
-# fases, garantindo escala consistente entre treino e teste.
-
-_ref_X = np.vstack(
-    [
-        _ham_features(3000),
-        _spam_phase_a(2000),
-        _spam_phase_b(2000),
-    ]
-).astype(np.float32)
-
-GLOBAL_MIN = _ref_X.min(axis=0)
-GLOBAL_MAX = _ref_X.max(axis=0)
-del _ref_X
+def load_locations(data_dir: str = DATA_DIR) -> dict[int, dict[str, np.ndarray]]:
+    """Carrega (uma vez) os dados de todas as localizações."""
+    global _loaded_locations
+    if _loaded_locations is None:
+        _loaded_locations = _load_all(data_dir)
+    return _loaded_locations
 
 
-def _normalize(X: np.ndarray) -> np.ndarray:
-    return (X - GLOBAL_MIN) / (GLOBAL_MAX - GLOBAL_MIN + 1e-8)
+def _location_seasonal_slice(loc_id: int, months: list[int], split: str) -> _Slice:
+    """Recorta um cliente pelos meses pedidos e devolve treino ou teste.
 
-
-# ── Fábrica de datasets ──────────────────────────────────────────────────────
-
-
-def make_dataset(n: int, spam_phase: str = "A", alpha: float = 0.0) -> TensorDataset:
-    """Gera um TensorDataset de e-mails sintéticos.
-
-    Args:
-        n:          Número total de amostras.
-        spam_phase: "A" | "B" | "mixed"
-        alpha:      Proporção de spam fase B quando spam_phase="mixed".
-                    0.0 → 100 % fase A;  1.0 → 100 % fase B.
+    Split é cronológico (80% inicial = treino, 20% final = teste) dentro da
+    janela sazonal, evitando vazamento temporal.
     """
-    n_spam = int(n * SPAM_RATIO)
-    n_ham = n - n_spam
+    locations = load_locations()
+    loc = locations[loc_id]
+    mask = np.isin(loc["month"], months)
+    X = loc["X"][mask]
+    y = loc["y"][mask]
 
-    ham_x = _ham_features(n_ham)
+    n = len(y)
+    if n == 0:
+        return _Slice(np.empty((0, FEATURE_DIM), dtype=np.float32), np.empty((0, 1), dtype=np.float32))
 
-    if spam_phase == "A":
-        spam_x = _spam_phase_a(n_spam)
-    elif spam_phase == "B":
-        spam_x = _spam_phase_b(n_spam)
-    else:  # "mixed"
-        n_b = int(n_spam * alpha)
-        n_a = n_spam - n_b
-        parts = []
-        if n_a > 0:
-            parts.append(_spam_phase_a(n_a))
-        if n_b > 0:
-            parts.append(_spam_phase_b(n_b))
-        spam_x = np.concatenate(parts)
+    cut = int(n * TRAIN_FRACTION)
+    if split == "train":
+        return _Slice(X[:cut], y[:cut])
+    if split == "test":
+        return _Slice(X[cut:], y[cut:])
+    raise ValueError(f"split inválido: {split!r}")
 
-    X = np.vstack([ham_x, spam_x]).astype(np.float32)
-    y = np.array([0] * n_ham + [1] * n_spam, dtype=np.int64)
 
-    idx = GeneratorUtil.permutation(n)
-    X, y = X[idx], y[idx]
-    X = _normalize(X).clip(0, 1)
+def _to_tensor_dataset(slc: _Slice) -> TensorDataset:
+    return TensorDataset(torch.from_numpy(slc.X), torch.from_numpy(slc.y))
 
+
+def client_pool(months: list[int], split: str = "train") -> list[TensorDataset]:
+    """Lista de TensorDatasets, um por cliente (= local), filtrado por meses."""
+    return [_to_tensor_dataset(_location_seasonal_slice(loc_id, months, split)) for loc_id in range(1, NUM_CLIENTS + 1)]
+
+
+def pooled_test(months: list[int]) -> TensorDataset:
+    """Concatena o split de teste de todos os locais para a estação dada."""
+    slices = [_location_seasonal_slice(loc_id, months, "test") for loc_id in range(1, NUM_CLIENTS + 1)]
+    X = np.vstack([s.X for s in slices])
+    y = np.vstack([s.y for s in slices])
     return TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
 
 
-def split_iid(dataset: TensorDataset, num_clients: int) -> list:
-    """Divide o dataset de forma IID entre os clientes."""
-    X, y = dataset.tensors
-    n = len(y)
+def build_seasonal_pools(months_a: list[int], months_b: list[int]) -> dict:
+    """Pré-gera pools de treino e teste para os cenários sazonais.
 
-    idx = GeneratorUtil.permutation(n)
-    chunk = n // num_clients
-    return [
-        TensorDataset(
-            X[idx[i * chunk : (i + 1) * chunk]],
-            y[idx[i * chunk : (i + 1) * chunk]],
-        )
-        for i in range(num_clients)
-    ]
-
-
-def mix_client_pools(pool_a: list, pool_b: list, n_drift: int) -> list:
-    """Combina dois pools de clientes: os últimos n_drift recebem pool_b.
-
-    Modela drift parcial: alguns clientes observam o novo padrão de spam
-    enquanto os demais continuam com o padrão anterior.
+    Layout:
+      - "clients_A", "clients_B": list[TensorDataset]   (1 por cliente/local)
+      - "test_A", "test_B"      : TensorDataset         (pool de todos os locais)
     """
-    stable = len(pool_a) - n_drift
-    return pool_a[:stable] + pool_b[stable:]
+    return {
+        "clients_A": client_pool(months_a, split="train"),
+        "clients_B": client_pool(months_b, split="train"),
+        "test_A": pooled_test(months_a),
+        "test_B": pooled_test(months_b),
+    }

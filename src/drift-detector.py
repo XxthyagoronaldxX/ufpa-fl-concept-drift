@@ -28,7 +28,7 @@ from config import (
     DRIFT_DETECTOR_TYPE,
     DRIFT_KS_THRESHOLD,
     DRIFT_MEAN_SHIFT_THRESHOLD,
-    DRIFT_MIN_DROP_PP,
+    DRIFT_MIN_RISE_PP,
     DRIFT_REFERENCE_SIZE,
     DRIFT_WINDOW_SIZE,
 )
@@ -47,7 +47,7 @@ class DriftDetectionResult:
 class BaseDriftDetector:
     name = "base"
 
-    def update(self, round_id: int, accuracy: float, f1: float, dataset: TensorDataset | None = None) -> DriftDetectionResult:
+    def update(self, round_id: int, mae: float, rmse: float, dataset: TensorDataset | None = None) -> DriftDetectionResult:
         raise NotImplementedError
 
 
@@ -79,19 +79,23 @@ def _ks_statistic(a: np.ndarray, b: np.ndarray) -> float:
 
 
 class PerformanceDropDetector(BaseDriftDetector):
-    """Detecta drift quando a média recente da métrica cai frente à referência."""
+    """Detecta drift quando a métrica de erro recente sobe frente à referência.
+
+    Em regressão, drift se manifesta como aumento do MAE/RMSE — o oposto da
+    versão de classificação (que olhava queda de acurácia/F1).
+    """
 
     name = "performance"
 
-    def __init__(self, reference_size: int = DRIFT_REFERENCE_SIZE, window_size: int = DRIFT_WINDOW_SIZE, min_drop_pp: float = DRIFT_MIN_DROP_PP, metric: str = "f1"):
+    def __init__(self, reference_size: int = DRIFT_REFERENCE_SIZE, window_size: int = DRIFT_WINDOW_SIZE, min_rise_pp: float = DRIFT_MIN_RISE_PP, metric: str = "mae"):
         self.reference_size = reference_size
         self.window_size = window_size
-        self.min_drop_pp = min_drop_pp
+        self.min_rise_pp = min_rise_pp
         self.metric = metric
         self.values = []
 
-    def update(self, round_id: int, accuracy: float, f1: float, dataset: TensorDataset | None = None) -> DriftDetectionResult:
-        value = f1 if self.metric == "f1" else accuracy
+    def update(self, round_id: int, mae: float, rmse: float, dataset: TensorDataset | None = None) -> DriftDetectionResult:
+        value = rmse if self.metric == "rmse" else mae
         self.values.append(float(value))
 
         needed = self.reference_size + self.window_size
@@ -100,11 +104,11 @@ class PerformanceDropDetector(BaseDriftDetector):
 
         reference = np.mean(self.values[: self.reference_size])
         recent = np.mean(self.values[-self.window_size :])
-        drop = max(0.0, reference - recent)
-        detected = drop >= self.min_drop_pp
-        severity = _severity(drop, self.min_drop_pp, self.min_drop_pp * 1.8) if detected else "none"
-        message = f"queda de {self.metric.upper()}={drop:.1f} p.p. (ref={reference:.1f}, recente={recent:.1f})"
-        return DriftDetectionResult(detected, round_id, self.name, severity, drop, message)
+        rise = max(0.0, recent - reference)
+        detected = rise >= self.min_rise_pp
+        severity = _severity(rise, self.min_rise_pp, self.min_rise_pp * 1.8) if detected else "none"
+        message = f"alta de {self.metric.upper()}={rise:.2f} p.p. (ref={reference:.2f}, recente={recent:.2f})"
+        return DriftDetectionResult(detected, round_id, self.name, severity, rise, message)
 
 
 class FeatureKSTestDetector(BaseDriftDetector):
@@ -117,7 +121,7 @@ class FeatureKSTestDetector(BaseDriftDetector):
         self.threshold = threshold
         self.reference_batches = []
 
-    def update(self, round_id: int, accuracy: float, f1: float, dataset: TensorDataset | None = None) -> DriftDetectionResult:
+    def update(self, round_id: int, mae: float, rmse: float, dataset: TensorDataset | None = None) -> DriftDetectionResult:
         x = _features_from_dataset(dataset)
         if x is None:
             return DriftDetectionResult(False, round_id, self.name, message="dataset indisponível")
@@ -145,7 +149,7 @@ class MeanShiftDetector(BaseDriftDetector):
         self.threshold = threshold
         self.reference_batches = []
 
-    def update(self, round_id: int, accuracy: float, f1: float, dataset: TensorDataset | None = None) -> DriftDetectionResult:
+    def update(self, round_id: int, mae: float, rmse: float, dataset: TensorDataset | None = None) -> DriftDetectionResult:
         x = _features_from_dataset(dataset)
         if x is None:
             return DriftDetectionResult(False, round_id, self.name, message="dataset indisponível")
@@ -174,8 +178,8 @@ class CompositeDriftDetector(BaseDriftDetector):
         self.cooldown = 0
         self.last_results = deque(maxlen=8)
 
-    def update(self, round_id: int, accuracy: float, f1: float, dataset: TensorDataset | None = None) -> DriftDetectionResult:
-        results = [detector.update(round_id, accuracy, f1, dataset) for detector in self.detectors]
+    def update(self, round_id: int, mae: float, rmse: float, dataset: TensorDataset | None = None) -> DriftDetectionResult:
+        results = [detector.update(round_id, mae, rmse, dataset) for detector in self.detectors]
         self.last_results.extend(results)
         votes = [result for result in results if result.detected]
 
