@@ -26,22 +26,22 @@ CYCLE_LEN = 4  # rodadas por fase no drift recorrente
 #   "performance", "ks", "mean_shift", "composite"
 DRIFT_DETECTOR_TYPE = "composite"
 DRIFT_DETECTOR_POLICY = "any"  # "any" dispara com 1 detector; "majority" exige maioria
-DRIFT_REFERENCE_SIZE = 4
+DRIFT_REFERENCE_SIZE = 2
 DRIFT_WINDOW_SIZE = 3
 # Aumento mínimo de erro (em pontos de MAE×100, ou seja %) para sinalizar drift.
 DRIFT_MIN_RISE_PP = 4.0
 DRIFT_KS_THRESHOLD = 0.35
 DRIFT_MEAN_SHIFT_THRESHOLD = 0.18
-DRIFT_DETECTOR_COOLDOWN = 2
+DRIFT_DETECTOR_COOLDOWN = 1
 
 # Corretores disponíveis:
 #   "learning_rate", "epochs", "recent_replay", "severity_adaptive"
 DRIFT_CORRECTOR_TYPE = "severity_adaptive"
-DRIFT_CORRECTION_COOLDOWN = 4
-DRIFT_LR_MULTIPLIER = 1.8
-DRIFT_EXTRA_EPOCHS = 1
+DRIFT_CORRECTION_COOLDOWN = 2
+DRIFT_LR_MULTIPLIER = 3.0
+DRIFT_EXTRA_EPOCHS = 3
 DRIFT_REPLAY_MEMORY_SIZE = 2
-DRIFT_REPLAY_RATIO = 0.35
+DRIFT_REPLAY_RATIO = 0.5
 
 # ── Dataset ──────────────────────────────────────────────────────────────────
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")

@@ -50,6 +50,10 @@ class BaseDriftCorrector:
         raise NotImplementedError
 
     def remember(self, client_datasets: list[TensorDataset]) -> None:
+        # Congela o buffer enquanto a correção está ativa: preserva o snapshot
+        # da fase pré-drift para servir como replay anti-esquecimento.
+        if self.remaining_rounds > 0:
+            return
         self.memory.append(client_datasets)
 
     def apply_replay(self, client_datasets: list[TensorDataset], replay_ratio: float = DRIFT_REPLAY_RATIO) -> list[TensorDataset]:
