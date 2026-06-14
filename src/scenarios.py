@@ -24,6 +24,7 @@ import sys
 from config import (
     CYCLE_LEN,
     DEVICE,
+    DRIFT_ENSEMBLE_ENABLED,
     DRIFT_ROUND,
     LEARNING_RATE,
     LOCAL_EPOCHS,
@@ -51,6 +52,8 @@ _drift_correction_module = _load_local_module("drift_correction", "drift-correct
 
 build_drift_detector = _drift_detector_module.build_drift_detector
 build_drift_corrector = _drift_correction_module.build_drift_corrector
+build_concept_ensemble = _drift_correction_module.build_concept_ensemble
+_fingerprint = _drift_correction_module._fingerprint
 
 
 # ── Preparação dos pools de dados ────────────────────────────────────────────
@@ -116,8 +119,8 @@ def _drift_note(scenario: str, rnd: int) -> str:
 # ── Loop principal de FL ─────────────────────────────────────────────────────
 
 
-def run_scenario(name: str, get_train_fn, get_test_fn, enable_correction: bool = True) -> tuple[list, list]:
-    """Executa NUM_ROUNDS de FL e retorna históricos de MAE e RMSE.
+def run_scenario(name: str, get_train_fn, get_test_fn, enable_correction: bool = True) -> dict:
+    """Executa NUM_ROUNDS de FL e retorna históricos por rodada.
 
     Args:
         name:              Identificador do cenário (usado no log).
@@ -126,44 +129,79 @@ def run_scenario(name: str, get_train_fn, get_test_fn, enable_correction: bool =
         enable_correction: aplica correções adaptativas quando um drift é detectado.
 
     Returns:
-        (mae_history, rmse_history) — listas com um valor por rodada (em p.p. de Power).
+        dict com chaves:
+            - "mae", "rmse":  listas (uma entrada por rodada, em p.p. de Power).
+            - "events":       lista de dicts com telemetria por rodada
+              (`detected`, `severity`, `correction_active`, `lr`, `epochs`,
+              `replay_ratio`, `phase`).
     """
     model = WindPowerMLP().to(DEVICE)
-    mae_hist, rmse_hist = [], []
+    mae_hist, rmse_hist, acc_hist, events = [], [], [], []
     detector = build_drift_detector()
     corrector = build_drift_corrector()
+    ensemble = build_concept_ensemble() if (enable_correction and DRIFT_ENSEMBLE_ENABLED) else None
     correction_state = _drift_correction_module.CorrectionState(False, LEARNING_RATE, LOCAL_EPOCHS)
 
     print(f"\n{'═' * 64}")
     print(f"  Cenário: {name}")
     print(f"{'═' * 64}")
-    print(f"  {'Rodada':>7}  │  {'MAE':>7}  │  {'RMSE':>7}  │  {'R²':>6}  │  Observação")
+    print(f"  {'Rodada':>7}  │  {'MAE':>7}  │  {'RMSE':>7}  │  {'R²':>6}  │  {'Acur':>6}  │  Observação")
     print(f"  {'-' * 92}")
 
     for rnd in range(1, NUM_ROUNDS + 1):
         # Treino local + agregação FedAvg
         client_datasets = get_train_fn(rnd)
+
+        # Concept ensemble: warm-start no expert da fase atual (se houver match)
+        concept_id = None
+        concept_created = False
+        if ensemble is not None:
+            fingerprint = _fingerprint(client_datasets)
+            concept_id, concept_created = ensemble.select_or_create(fingerprint, model.state_dict())
+            if not concept_created:
+                model.load_state_dict(ensemble.get_state(concept_id))
+
         train_datasets = corrector.apply_replay(client_datasets, correction_state.replay_ratio) if enable_correction and correction_state.active else client_datasets
         updates = [FederatedService.local_train(model, ds, correction_state.local_epochs, correction_state.learning_rate) for ds in train_datasets]
         model.load_state_dict(FederatedService.fed_avg(model.state_dict(), updates))
 
+        if ensemble is not None and concept_id is not None:
+            ensemble.save(concept_id, model.state_dict())
+
         # Avaliação no dataset de teste da rodada atual
         test_dataset = get_test_fn(rnd)
-        mae, rmse, r2 = FederatedService.evaluate(model, test_dataset)
+        mae, rmse, r2, acc = FederatedService.evaluate(model, test_dataset)
         mae_hist.append(mae)
         rmse_hist.append(rmse)
+        acc_hist.append(acc)
 
         detection = detector.update(rnd, mae, rmse, test_dataset)
         next_correction_state = corrector.update(detection) if enable_correction else _drift_correction_module.CorrectionState(False, LEARNING_RATE, LOCAL_EPOCHS)
         corrector.remember(client_datasets)
 
+        events.append(
+            {
+                "round": rnd,
+                "detected": bool(detection.detected),
+                "severity": detection.severity if detection.detected else "none",
+                "correction_active": bool(correction_state.active),
+                "lr": float(correction_state.learning_rate),
+                "epochs": int(correction_state.local_epochs),
+                "replay_ratio": float(correction_state.replay_ratio),
+                "phase": _drift_note(name, rnd),
+            }
+        )
+
         notes = [_drift_note(name, rnd)]
+        if ensemble is not None and concept_id is not None:
+            tag = f"NOVO concept #{concept_id}" if concept_created else f"concept #{concept_id}"
+            notes.append(tag)
         if detection.detected:
             notes.append(f"DETECTADO {detection.severity}: {detection.message}")
         if enable_correction and correction_state.active:
             notes.append(correction_state.message)
         note = " | ".join(note for note in notes if note)
-        print(f"  {rnd:>7d}  │  {mae:>6.2f}%  │  {rmse:>6.2f}%  │  {r2:>6.3f}  │  {note}")
+        print(f"  {rnd:>7d}  │  {mae:>6.2f}%  │  {rmse:>6.2f}%  │  {r2:>6.3f}  │  acc={acc * 100:>5.1f}%  │  {note}")
         correction_state = next_correction_state
 
-    return mae_hist, rmse_hist
+    return {"mae": mae_hist, "rmse": rmse_hist, "acc": acc_hist, "events": events}

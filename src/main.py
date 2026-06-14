@@ -32,7 +32,7 @@ from scenarios import (
     make_recurrent_fns,
     run_scenario,
 )
-from visualization import plot_results, plot_separated_results, print_summary
+from visualization import plot_results, plot_separated_results, plot_correction_treatment, plot_accuracy, print_summary
 
 warnings.filterwarnings("ignore")
 
@@ -61,6 +61,8 @@ def main():
     print_summary(histories, DRIFT_ROUND)
     plot_results(histories, DRIFT_ROUND)
     plot_separated_results(histories, DRIFT_ROUND)
+    plot_correction_treatment(histories, DRIFT_ROUND)
+    plot_accuracy(histories, DRIFT_ROUND)
 
 
 if __name__ == "__main__":

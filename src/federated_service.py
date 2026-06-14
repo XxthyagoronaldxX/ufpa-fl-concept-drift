@@ -6,7 +6,7 @@ from copy import deepcopy
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from config import BATCH_SIZE, DEVICE
+from config import BATCH_SIZE, DEVICE, TOLERANCE_ACC
 
 
 class FederatedService:
@@ -45,12 +45,14 @@ class FederatedService:
 
     @staticmethod
     @torch.no_grad()
-    def evaluate(model: nn.Module, dataset: TensorDataset) -> tuple[float, float, float]:
-        """Retorna (MAE, RMSE, R²) em escala percentual para MAE/RMSE.
+    def evaluate(model: nn.Module, dataset: TensorDataset) -> tuple[float, float, float, float]:
+        """Retorna (MAE, RMSE, R², accε) com MAE/RMSE em escala percentual.
 
         MAE e RMSE são multiplicados por 100 para virarem "p.p. de Power".
         R² fica na escala original (sem multiplicar) — pode ser negativo se o
         modelo for pior que prever a média.
+        accε ∈ [0, 1] é a fração de previsões com |ŷ − y| < TOLERANCE_ACC
+        (acurácia tolerante).
         """
         model.eval()
         loader = DataLoader(dataset, batch_size=256, shuffle=False, num_workers=0)
@@ -67,4 +69,5 @@ class FederatedService:
         mae = 100.0 * mean_absolute_error(y_true, y_pred)
         rmse = 100.0 * float(np.sqrt(mean_squared_error(y_true, y_pred)))
         r2 = float(r2_score(y_true, y_pred)) if len(y_true) > 1 else 0.0
-        return mae, rmse, r2
+        acc = float(np.mean(np.abs(y_pred - y_true) < TOLERANCE_ACC)) if len(y_true) > 0 else 0.0
+        return mae, rmse, r2, acc
