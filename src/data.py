@@ -37,7 +37,7 @@ import pandas as pd
 import torch
 from torch.utils.data import TensorDataset
 
-from config import DATA_DIR, FEATURE_DIM, NUM_CLIENTS, TRAIN_FRACTION
+from config import DATA_DIR, FEATURE_DIM, MAX_TRAIN_PER_CLIENT, NUM_CLIENTS, SEED, TRAIN_FRACTION
 
 FEATURE_NAMES = [
     "temperature_2m",
@@ -200,7 +200,16 @@ def _location_seasonal_slice(loc_id: int, months: list[int], split: str) -> _Sli
 
     cut = int(n * TRAIN_FRACTION)
     if split == "train":
-        return _Slice(X[:cut], y[:cut])
+        X_train = X[:cut]
+        y_train = y[:cut]
+        if MAX_TRAIN_PER_CLIENT is not None and len(X_train) > MAX_TRAIN_PER_CLIENT:
+            seed = SEED + loc_id * 1000 + sum(months)
+            rng = np.random.default_rng(seed)
+            idx = rng.choice(len(X_train), size=MAX_TRAIN_PER_CLIENT, replace=False)
+            idx.sort()  # mantém ordem cronológica relativa
+            X_train = X_train[idx]
+            y_train = y_train[idx]
+        return _Slice(X_train, y_train)
     if split == "test":
         return _Slice(X[cut:], y[cut:])
     raise ValueError(f"split inválido: {split!r}")

@@ -13,7 +13,7 @@ SEED = 42
 
 # ── Federated Learning ───────────────────────────────────────────────────────
 NUM_CLIENTS = 4  # 1 cliente por local (Location1..Location4)
-NUM_ROUNDS = 24  # 7 warmup verão + 5 ciclos JJA↔DJF de CYCLE_LEN rodadas (8..47) + 1 parcial
+NUM_ROUNDS = 48  # 7 warmup verão + 10 ciclos JJA↔DJF de CYCLE_LEN rodadas (8..47)
 LOCAL_EPOCHS = 3
 BATCH_SIZE = 32
 LEARNING_RATE = 0.01
@@ -33,6 +33,7 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # (v³ a 100m, densidade do ar, ρ·v³, hora sin/cos).
 FEATURE_DIM = 15
 TRAIN_FRACTION = 0.8  # split cronológico por janela sazonal
+MAX_TRAIN_PER_CLIENT = 2000  # subsample por cliente/estação (None = sem cap)
 
 # Eixos sazonais para o concept drift (hemisfério norte; o dataset é local).
 SUMMER_MONTHS = [6, 7, 8]  # JJA — fase A
