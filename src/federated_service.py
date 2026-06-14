@@ -4,24 +4,24 @@ import torch.nn as nn
 import torch.optim as optim
 from copy import deepcopy
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error
 
-from config import BATCH_SIZE, DEVICE, TOLERANCE_ACC
+from config import BATCH_SIZE, DEVICE, LOCAL_EPOCHS
 
 
 class FederatedService:
     @staticmethod
-    def local_train(global_model: nn.Module, dataset: TensorDataset, epochs: int, lr: float) -> tuple[dict, int]:
+    def local_train(global_model: nn.Module, dataset) -> tuple[dict, int]:
         # Cópia local do modelo global. Simula envio ao cliente; o cliente treina e
         # devolve os pesos atualizados.
         model = deepcopy(global_model).to(DEVICE)
         model.train()
 
         loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-        optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+        optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
         criterion = nn.MSELoss()
 
-        for _ in range(epochs):
+        for _ in range(LOCAL_EPOCHS):
             for x_b, y_b in loader:
                 x_b = x_b.to(DEVICE)
                 y_b = y_b.to(DEVICE).float()
@@ -45,15 +45,8 @@ class FederatedService:
 
     @staticmethod
     @torch.no_grad()
-    def evaluate(model: nn.Module, dataset: TensorDataset) -> tuple[float, float, float, float]:
-        """Retorna (MAE, RMSE, R², accε) com MAE/RMSE em escala percentual.
-
-        MAE e RMSE são multiplicados por 100 para virarem "p.p. de Power".
-        R² fica na escala original (sem multiplicar) — pode ser negativo se o
-        modelo for pior que prever a média.
-        accε ∈ [0, 1] é a fração de previsões com |ŷ − y| < TOLERANCE_ACC
-        (acurácia tolerante).
-        """
+    def evaluate(model: nn.Module, dataset: TensorDataset) -> float:
+        """Retorna o MAE em escala percentual ("p.p. de Power")."""
         model.eval()
         loader = DataLoader(dataset, batch_size=256, shuffle=False, num_workers=0)
 
@@ -66,8 +59,4 @@ class FederatedService:
         y_pred = np.vstack(all_preds).reshape(-1)
         y_true = np.vstack(all_labels).reshape(-1)
 
-        mae = 100.0 * mean_absolute_error(y_true, y_pred)
-        rmse = 100.0 * float(np.sqrt(mean_squared_error(y_true, y_pred)))
-        r2 = float(r2_score(y_true, y_pred)) if len(y_true) > 1 else 0.0
-        acc = float(np.mean(np.abs(y_pred - y_true) < TOLERANCE_ACC)) if len(y_true) > 0 else 0.0
-        return mae, rmse, r2, acc
+        return 100.0 * mean_absolute_error(y_true, y_pred)

@@ -32,7 +32,7 @@ from scenarios import (
     make_recurrent_fns,
     run_scenario,
 )
-from visualization import plot_results, plot_separated_results, plot_correction_treatment, plot_accuracy, print_summary
+from visualization import plot_results, print_summary
 
 warnings.filterwarnings("ignore")
 
@@ -53,16 +53,17 @@ def main():
     print(f"[INFO] Pools sazonais carregados ({n_train_per_client} amostras de treino/cliente, {n_test} de teste por estação).")
 
     histories = {
-        "FL Padrão": run_scenario("FL Padrão", *make_standard_fns(pools), enable_correction=False),
-        "Recorrente sem correção": run_scenario("FL Drift Recorrente — sem correção", *make_recurrent_fns(pools), enable_correction=False),
-        "Recorrente com correção": run_scenario("FL Drift Recorrente — com correção", *make_recurrent_fns(pools), enable_correction=True),
+        "FL Padrão": run_scenario("FL Padrão", *make_standard_fns(pools)),
+        "FL Drift Recorrente": run_scenario("FL Drift Recorrente", *make_recurrent_fns(pools)),
+        "FL Drift Recorrente (Com correção)": run_scenario(
+            "FL Drift Recorrente (Com correção)",
+            *make_recurrent_fns(pools),
+            use_replay=True,
+        ),
     }
 
     print_summary(histories, DRIFT_ROUND)
     plot_results(histories, DRIFT_ROUND)
-    plot_separated_results(histories, DRIFT_ROUND)
-    plot_correction_treatment(histories, DRIFT_ROUND)
-    plot_accuracy(histories, DRIFT_ROUND)
 
 
 if __name__ == "__main__":

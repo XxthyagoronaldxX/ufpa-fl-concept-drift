@@ -223,16 +223,34 @@ def pooled_test(months: list[int]) -> TensorDataset:
     return TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
 
 
+def pooled_test_combined(months_a: list[int], months_b: list[int]) -> TensorDataset:
+    """Pool de teste cobrindo as duas estações simultaneamente.
+
+    Necessário para que o efeito do replay sobre o catastrophic forgetting
+    fique visível: o modelo é avaliado em verão e inverno juntos, e não só
+    na estação corrente.
+    """
+    slices = []
+    for loc_id in range(1, NUM_CLIENTS + 1):
+        slices.append(_location_seasonal_slice(loc_id, months_a, "test"))
+        slices.append(_location_seasonal_slice(loc_id, months_b, "test"))
+    X = np.vstack([s.X for s in slices])
+    y = np.vstack([s.y for s in slices])
+    return TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
+
+
 def build_seasonal_pools(months_a: list[int], months_b: list[int]) -> dict:
     """Pré-gera pools de treino e teste para os cenários sazonais.
 
     Layout:
       - "clients_A", "clients_B": list[TensorDataset]   (1 por cliente/local)
       - "test_A", "test_B"      : TensorDataset         (pool de todos os locais)
+      - "test_combined"         : TensorDataset         (verão + inverno juntos)
     """
     return {
         "clients_A": client_pool(months_a, split="train"),
         "clients_B": client_pool(months_b, split="train"),
         "test_A": pooled_test(months_a),
         "test_B": pooled_test(months_b),
+        "test_combined": pooled_test_combined(months_a, months_b),
     }

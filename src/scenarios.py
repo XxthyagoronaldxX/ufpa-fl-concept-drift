@@ -5,56 +5,33 @@ Definição dos cenários de Federated Learning e execução por rodada,
 aplicados a previsão de potência eólica.
 
 Cenários (eixo de drift = sazonal):
-  1. FL Padrão       — distribuição estacionária (somente verão)
-  2. Drift Recorrente — alterna verão ↔ inverno em ciclos de CYCLE_LEN rodadas
+  1. FL Padrão          — distribuição estacionária (somente verão)
+  2. FL Drift Recorrente — alterna verão ↔ inverno em ciclos de CYCLE_LEN
+                            rodadas, usando SeasonalReplayBuffer (mistura
+                            50% de amostras da estação oposta a cada batch).
 
-A alternância recorrente é o único padrão fiel à natureza cíclica das estações
-do ano; cenários de drift súbito ou unidirecional gradual não condizem com a
-realidade meteorológica adotada como eixo de drift.
-
-Cada cliente federado corresponde a uma das 4 localizações do dataset
-(Location1..Location4) — federação não-IID. O dataset de teste de cada rodada
-acompanha a distribuição vigente, tornando visível o impacto do drift.
+O detector observacional permanece ativo nos dois cenários apenas para
+sinalizar no log quando uma queda de desempenho é detectada.
 """
-
-import importlib.util
-import os
-import sys
 
 from config import (
     CYCLE_LEN,
     DEVICE,
-    DRIFT_ENSEMBLE_ENABLED,
     DRIFT_ROUND,
-    LEARNING_RATE,
-    LOCAL_EPOCHS,
+    DRIFT_THRESHOLD,
+    DRIFT_WINDOW_SIZE,
+    NUM_CLIENTS,
     NUM_ROUNDS,
+    REPLAY_BUFFER_SIZE,
     SUMMER_MONTHS,
     WINTER_MONTHS,
 )
 from data import build_seasonal_pools
+from drift_detector import DetectorDeDrift
 from federated_service import FederatedService
 from model import WindPowerMLP
-
-
-def _load_local_module(module_name: str, filename: str):
-    """Carrega módulos locais cujos arquivos têm hífen no nome."""
-    path = os.path.join(os.path.dirname(__file__), filename)
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-_drift_detector_module = _load_local_module("drift_detector", "drift-detector.py")
-_drift_correction_module = _load_local_module("drift_correction", "drift-correction.py")
-
-build_drift_detector = _drift_detector_module.build_drift_detector
-build_drift_corrector = _drift_correction_module.build_drift_corrector
-build_concept_ensemble = _drift_correction_module.build_concept_ensemble
-_fingerprint = _drift_correction_module._fingerprint
-
+from seasonal_replay_buffer import SeasonalReplayBuffer
+from torch.utils.data import ConcatDataset
 
 # ── Preparação dos pools de dados ────────────────────────────────────────────
 
@@ -73,19 +50,28 @@ def build_data_pools() -> dict:
 
 
 def make_standard_fns(pools: dict):
-    """Cenário 1 — sem drift: somente verão (distribuição estacionária)."""
+    """Cenário 1 — sem drift: somente verão (distribuição estacionária).
+
+    O teste é feito no pool combinado (verão + inverno) para expor o quanto
+    o modelo treinado só em verão falha em generalizar para o inverno.
+    """
 
     def get_train(rnd):
         return pools["clients_A"]
 
     def get_test(rnd):
-        return pools["test_A"]
+        return pools["test_combined"]
 
     return get_train, get_test
 
 
 def make_recurrent_fns(pools: dict):
-    """Cenário 2 — drift recorrente: alterna verão ↔ inverno em ciclos de CYCLE_LEN."""
+    """Cenário 2 — drift recorrente: alterna verão ↔ inverno em ciclos de CYCLE_LEN.
+
+    O teste também é feito no pool combinado: assim, o ganho do replay sobre
+    o catastrophic forgetting fica mensurável — o modelo é cobrado nas duas
+    estações a cada rodada, não só na corrente.
+    """
 
     def _phase(rnd: int) -> str:
         pos = (rnd - DRIFT_ROUND) % (2 * CYCLE_LEN)
@@ -97,9 +83,7 @@ def make_recurrent_fns(pools: dict):
         return pools["clients_B"] if _phase(rnd) == "B" else pools["clients_A"]
 
     def get_test(rnd):
-        if rnd < DRIFT_ROUND:
-            return pools["test_A"]
-        return pools["test_B"] if _phase(rnd) == "B" else pools["test_A"]
+        return pools["test_combined"]
 
     return get_train, get_test
 
@@ -116,92 +100,72 @@ def _drift_note(scenario: str, rnd: int) -> str:
     return ""
 
 
+def _season_for_round(scenario: str, rnd: int) -> str:
+    """Mapeia a rodada para 'verao' ou 'inverno' (chaves do replay buffer)."""
+    if "Recorrente" in scenario and rnd >= DRIFT_ROUND:
+        pos = (rnd - DRIFT_ROUND) % (2 * CYCLE_LEN)
+        return "inverno" if pos < CYCLE_LEN else "verao"
+    return "verao"
+
+
 # ── Loop principal de FL ─────────────────────────────────────────────────────
 
 
-def run_scenario(name: str, get_train_fn, get_test_fn, enable_correction: bool = True) -> dict:
-    """Executa NUM_ROUNDS de FL e retorna históricos por rodada.
+def run_scenario(name: str, get_train_fn, get_test_fn, use_replay: bool = False) -> dict:
+    """Executa NUM_ROUNDS de FL com FedAvg + Adam e retorna o histórico de MAE.
 
     Args:
-        name:              Identificador do cenário (usado no log).
-        get_train_fn:      callable(rnd) → list[TensorDataset]
-        get_test_fn:       callable(rnd) → TensorDataset
-        enable_correction: aplica correções adaptativas quando um drift é detectado.
+        name:         Identificador do cenário (usado no log).
+        get_train_fn: callable(rnd) → list[TensorDataset]
+        get_test_fn:  callable(rnd) → TensorDataset
+        use_replay:   se True, cada cliente usa um SeasonalReplayBuffer que
+                      mistura amostras da estação oposta nos batches de treino.
 
     Returns:
-        dict com chaves:
-            - "mae", "rmse":  listas (uma entrada por rodada, em p.p. de Power).
-            - "events":       lista de dicts com telemetria por rodada
-              (`detected`, `severity`, `correction_active`, `lr`, `epochs`,
-              `replay_ratio`, `phase`).
+        dict com chave "mae": lista (uma entrada por rodada, em p.p. de Power).
     """
     model = WindPowerMLP().to(DEVICE)
-    mae_hist, rmse_hist, acc_hist, events = [], [], [], []
-    detector = build_drift_detector()
-    corrector = build_drift_corrector()
-    ensemble = build_concept_ensemble() if (enable_correction and DRIFT_ENSEMBLE_ENABLED) else None
-    correction_state = _drift_correction_module.CorrectionState(False, LEARNING_RATE, LOCAL_EPOCHS)
+    mae_hist = []
+    detector = DetectorDeDrift(tamanho_janela=DRIFT_WINDOW_SIZE, limiar_alerta=DRIFT_THRESHOLD)
+    replay_buffers = [SeasonalReplayBuffer(REPLAY_BUFFER_SIZE) for _ in range(NUM_CLIENTS)] if use_replay else None
+    prev_season: str | None = None
 
     print(f"\n{'═' * 64}")
     print(f"  Cenário: {name}")
     print(f"{'═' * 64}")
-    print(f"  {'Rodada':>7}  │  {'MAE':>7}  │  {'RMSE':>7}  │  {'R²':>6}  │  {'Acur':>6}  │  Observação")
-    print(f"  {'-' * 92}")
+    print(f"  {'Rodada':>7}  │  {'MAE':>7}  │  Fase")
+    print(f"  {'-' * 60}")
 
     for rnd in range(1, NUM_ROUNDS + 1):
-        # Treino local + agregação FedAvg
         client_datasets = get_train_fn(rnd)
+        season = _season_for_round(name, rnd)
 
-        # Concept ensemble: warm-start no expert da fase atual (se houver match)
-        concept_id = None
-        concept_created = False
-        if ensemble is not None:
-            fingerprint = _fingerprint(client_datasets)
-            concept_id, concept_created = ensemble.select_or_create(fingerprint, model.state_dict())
-            if not concept_created:
-                model.load_state_dict(ensemble.get_state(concept_id))
+        if use_replay:
+            # Em transições de fase (incluindo a primeira rodada), preenche o buffer
+            # de cada cliente com amostras da nova estação (fill-up).
+            if season != prev_season:
+                for i, ds in enumerate(client_datasets):
+                    replay_buffers[i].add_dataset(ds, season)
 
-        train_datasets = corrector.apply_replay(client_datasets, correction_state.replay_ratio) if enable_correction and correction_state.active else client_datasets
-        updates = [FederatedService.local_train(model, ds, correction_state.local_epochs, correction_state.learning_rate) for ds in train_datasets]
+            updates = []
+            for i, ds in enumerate(client_datasets):
+                buffer_ds = replay_buffers[i].get_dataset()
+                train_ds = ConcatDataset([ds, buffer_ds]) if buffer_ds is not None else ds
+                updates.append(FederatedService.local_train(model, train_ds))
+        else:
+            updates = [FederatedService.local_train(model, ds) for ds in client_datasets]
+
+        prev_season = season
         model.load_state_dict(FederatedService.fed_avg(model.state_dict(), updates))
 
-        if ensemble is not None and concept_id is not None:
-            ensemble.save(concept_id, model.state_dict())
-
-        # Avaliação no dataset de teste da rodada atual
         test_dataset = get_test_fn(rnd)
-        mae, rmse, r2, acc = FederatedService.evaluate(model, test_dataset)
+        mae = FederatedService.evaluate(model, test_dataset)
         mae_hist.append(mae)
-        rmse_hist.append(rmse)
-        acc_hist.append(acc)
 
-        detection = detector.update(rnd, mae, rmse, test_dataset)
-        next_correction_state = corrector.update(detection) if enable_correction else _drift_correction_module.CorrectionState(False, LEARNING_RATE, LOCAL_EPOCHS)
-        corrector.remember(client_datasets)
+        note = _drift_note(name, rnd)
+        if detector.atualizar_e_checar(mae):
+            alerta = f"[ALERTA] Concept Drift detectado na rodada {rnd}!"
+            note = f"{note} | {alerta}" if note else alerta
+        print(f"  {rnd:>7d}  │  {mae:>6.2f}%  │  {note}")
 
-        events.append(
-            {
-                "round": rnd,
-                "detected": bool(detection.detected),
-                "severity": detection.severity if detection.detected else "none",
-                "correction_active": bool(correction_state.active),
-                "lr": float(correction_state.learning_rate),
-                "epochs": int(correction_state.local_epochs),
-                "replay_ratio": float(correction_state.replay_ratio),
-                "phase": _drift_note(name, rnd),
-            }
-        )
-
-        notes = [_drift_note(name, rnd)]
-        if ensemble is not None and concept_id is not None:
-            tag = f"NOVO concept #{concept_id}" if concept_created else f"concept #{concept_id}"
-            notes.append(tag)
-        if detection.detected:
-            notes.append(f"DETECTADO {detection.severity}: {detection.message}")
-        if enable_correction and correction_state.active:
-            notes.append(correction_state.message)
-        note = " | ".join(note for note in notes if note)
-        print(f"  {rnd:>7d}  │  {mae:>6.2f}%  │  {rmse:>6.2f}%  │  {r2:>6.3f}  │  acc={acc * 100:>5.1f}%  │  {note}")
-        correction_state = next_correction_state
-
-    return {"mae": mae_hist, "rmse": rmse_hist, "acc": acc_hist, "events": events}
+    return {"mae": mae_hist}
