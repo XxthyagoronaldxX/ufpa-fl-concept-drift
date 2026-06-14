@@ -14,7 +14,7 @@ SEED = 42
 # ── Federated Learning ───────────────────────────────────────────────────────
 NUM_CLIENTS = 4  # 1 cliente por local (Location1..Location4)
 NUM_ROUNDS = 48  # 7 warmup verão + 10 ciclos JJA↔DJF de CYCLE_LEN rodadas (8..47)
-LOCAL_EPOCHS = 3
+LOCAL_EPOCHS = 5
 BATCH_SIZE = 32
 LEARNING_RATE = 0.01
 
@@ -26,7 +26,7 @@ DRIFT_WINDOW_SIZE = 5
 DRIFT_THRESHOLD = 1.3
 
 # SeasonalReplayBuffer: amostras máximas guardadas por estação, em cada cliente.
-REPLAY_BUFFER_SIZE = 250
+REPLAY_BUFFER_SIZE = 500
 # ── Dataset ──────────────────────────────────────────────────────────────────
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 # 6 numéricas brutas + 4 sin/cos de direção (10m e 100m) + 5 derivadas físicas

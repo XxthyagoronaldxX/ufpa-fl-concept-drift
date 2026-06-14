@@ -54,7 +54,7 @@ def downsample_one(input_path: str, output_path: str) -> tuple[int, dict]:
     out = pd.concat([summer, winter]).sort_values("Time").reset_index(drop=True)
 
     if not (800 <= len(out) <= 1000):
-        raise RuntimeError(f"Tamanho fora do esperado para {os.path.basename(input_path)}: " f"{len(out)} linhas (esperado 800-1000)")
+        raise RuntimeError(f"Tamanho fora do esperado para {os.path.basename(input_path)}: {len(out)} linhas (esperado 800-1000)")
 
     out.to_csv(output_path, index=False)
     months_count = dict(Counter(out["Time"].dt.month.tolist()))

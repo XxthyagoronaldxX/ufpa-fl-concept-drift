@@ -154,9 +154,9 @@ def _load_all(data_dir: str) -> dict[int, dict[str, np.ndarray]]:
         df = pd.read_csv(path)
         df["Time"] = pd.to_datetime(df["Time"])
         month = df["Time"].dt.month.to_numpy(dtype=np.int8)
-        X_raw, y = _engineer(df)
-        locations[loc_id] = {"X_raw": X_raw, "y": y, "month": month}
-        pooled.append(X_raw)
+        x_raw, y = _engineer(df)
+        locations[loc_id] = {"X_raw": x_raw, "y": y, "month": month}
+        pooled.append(x_raw)
 
     pool = np.vstack(pooled)
     _feature_min = pool.min(axis=0)

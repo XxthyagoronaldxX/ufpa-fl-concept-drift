@@ -40,7 +40,7 @@ def plot_results(histories: dict, drift_round: int = DRIFT_ROUND) -> None:
     """
     rounds = list(range(1, NUM_ROUNDS + 1))
 
-    fig, ax = plt.subplots(figsize=(16, 6))
+    _, ax = plt.subplots(figsize=(16, 6))
 
     for label, entry in histories.items():
         mae_h = _mae_of(entry)
