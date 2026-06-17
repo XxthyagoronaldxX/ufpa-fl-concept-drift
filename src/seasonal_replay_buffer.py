@@ -1,66 +1,54 @@
-"""
-seasonal_replay_buffer.py
-─────────────────────────
-Buffer de replay sazonal: armazena pares (x, y) por estação ('verao',
-'inverno') e expõe o conteúdo acumulado como um TensorDataset, usado para
-augmentar o dataset de treino do cliente via ConcatDataset.
-
-Estratégia (Case 3): cada cliente FL mantém o seu próprio buffer (preserva
-o isolamento da federação). Política **fill-up**: o buffer recebe amostras
-até atingir `max_size_per_season` e então congela — exposições futuras à
-mesma estação não substituem o que já está guardado. Isso preserva uma
-referência estável de cada concept ao longo das rodadas.
-
-Substitui o catastrophic forgetting causado pelo concept drift recorrente:
-ao concatenar o buffer com os dados atuais, o cliente vê amostras das duas
-estações em cada época de treino local.
-"""
-
-from __future__ import annotations
-
-import torch
+import random
 from torch.utils.data import TensorDataset
+from typing import Optional
+import torch
 
 
 class SeasonalReplayBuffer:
-    def __init__(self, max_size_per_season: int = 500):
-        self.max_size = max_size_per_season
-        self.buffer: dict[str, list[tuple[torch.Tensor, torch.Tensor]]] = {
-            "verao": [],
-            "inverno": [],
-        }
+    def __init__(self, max_samples_per_context: int = 500):
+        self.max_samples = max_samples_per_context
+        self.buffer: dict[int, TensorDataset] = {}
 
-    def add_dataset(self, dataset: TensorDataset, season: str) -> None:
-        """Empurra o dataset de treino atual para o buffer da estação dada,
-        respeitando a capacidade (fill-up: para de aceitar quando enche)."""
-        season = season.lower()
-        bucket = self.buffer[season]
-        remaining = self.max_size - len(bucket)
-        if remaining <= 0:
-            return
+    def add_history(self, dataset: TensorDataset, context_id: int):
+        current_size = len(dataset)
+        sample_size = min(self.max_samples, current_size)
 
-        for i in range(min(len(dataset), remaining)):
-            x, y = dataset[i]
-            bucket.append((x.detach().clone(), y.detach().clone()))
+        # 1. Escolhe índices aleatórios do dataset atual
+        indexes = random.sample(range(current_size), sample_size)
 
-    def get_dataset(self) -> TensorDataset | None:
-        """Concatena todos os pares guardados (de ambas as estações) em um
-        único TensorDataset. Retorna None se o buffer estiver vazio."""
-        all_x: list[torch.Tensor] = []
-        all_y: list[torch.Tensor] = []
+        # 2. Extrai e fatia os tensores DIRETAMENTE usando os índices sorteados
+        x_new = dataset.tensors[0][indexes]
+        y_new = dataset.tensors[1][indexes]
 
-        for samples in self.buffer.values():
-            for x, y in samples:
-                all_x.append(x)
-                all_y.append(y)
+        if context_id in self.buffer:
+            # 3. Recupera as matrizes antigas que já estavam no buffer
+            dataset_old = self.buffer[context_id]
+            x_old = dataset_old.tensors[0]
+            y_old = dataset_old.tensors[1]
 
-        if not all_x:
+            # 4. Concatena tudo de forma nativa e matemática
+            x_concat = torch.cat([x_old, x_new], dim=0)
+            y_concat = torch.cat([y_old, y_new], dim=0)
+
+            # 5. Corta o excesso mantendo apenas as amostras mais recentes (do final da matriz)
+            if len(x_concat) > self.max_samples:
+                x_concat = x_concat[-self.max_samples :]
+                y_concat = y_concat[-self.max_samples :]
+
+            self.buffer[context_id] = TensorDataset(x_concat, y_concat)
+        else:
+            self.buffer[context_id] = TensorDataset(x_new, y_new)
+
+    def recovery_history(self) -> Optional[list[TensorDataset]]:
+        if not self.buffer:
             return None
 
-        X = torch.stack(all_x)
-        Y = torch.stack(all_y)
+        datasets_to_replay: list[TensorDataset] = []
 
-        return TensorDataset(X, Y)
+        for _, ds in self.buffer.items():
+            datasets_to_replay.append(ds)
 
-    def size(self) -> int:
-        return sum(len(v) for v in self.buffer.values())
+        if not datasets_to_replay:
+            return None
+
+        return datasets_to_replay

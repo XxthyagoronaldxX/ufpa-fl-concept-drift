@@ -14,6 +14,10 @@ SEED = 42
 # ── Federated Learning ───────────────────────────────────────────────────────
 NUM_CLIENTS = 4  # 1 cliente por local (Location1..Location4)
 NUM_ROUNDS = 48  # 7 warmup verão + 10 ciclos JJA↔DJF de CYCLE_LEN rodadas (8..47)
+
+TEST_RATE = 0.2  # Fração reservada para teste (split cronológico)
+GLOBAL_ROUNDS = 20
+
 LOCAL_EPOCHS = 5
 BATCH_SIZE = 32
 LEARNING_RATE = 0.01
@@ -31,7 +35,7 @@ REPLAY_BUFFER_SIZE = 500
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 # 6 numéricas brutas + 4 sin/cos de direção (10m e 100m) + 5 derivadas físicas
 # (v³ a 100m, densidade do ar, ρ·v³, hora sin/cos).
-FEATURE_DIM = 15
+FEATURE_DIM = 8
 TRAIN_FRACTION = 0.8  # split cronológico por janela sazonal
 MAX_TRAIN_PER_CLIENT = 2000  # subsample por cliente/estação (None = sem cap)
 
