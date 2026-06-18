@@ -17,20 +17,21 @@ sinalizar no log quando uma queda de desempenho é detectada.
 from config import (
     CYCLE_LEN,
     DEVICE,
+    DRIFT_BUFFER_PER_SEASON,
+    DRIFT_BURN_IN,
+    DRIFT_DELTA,
     DRIFT_ROUND,
     DRIFT_THRESHOLD,
-    DRIFT_WINDOW_SIZE,
     NUM_CLIENTS,
     NUM_ROUNDS,
-    REPLAY_BUFFER_SIZE,
     SUMMER_MONTHS,
     WINTER_MONTHS,
 )
 from data import build_seasonal_pools
-from drift_detector import DetectorDeDrift
+from drift_detector import PageHinkleyDetector
 from federated_service import FederatedService
 from model import WindPowerMLP
-from seasonal_replay_buffer import SeasonalReplayBuffer
+from drift_corrector import SeasonalReplayBuffer
 from torch.utils.data import ConcatDataset
 
 # ── Preparação dos pools de dados ────────────────────────────────────────────
@@ -126,8 +127,8 @@ def run_scenario(name: str, get_train_fn, get_test_fn, use_replay: bool = False)
     """
     model = WindPowerMLP().to(DEVICE)
     mae_hist = []
-    detector = DetectorDeDrift(tamanho_janela=DRIFT_WINDOW_SIZE, limiar_alerta=DRIFT_THRESHOLD)
-    replay_buffers = [SeasonalReplayBuffer(REPLAY_BUFFER_SIZE) for _ in range(NUM_CLIENTS)] if use_replay else None
+    drift_detector = PageHinkleyDetector(threshold=DRIFT_THRESHOLD, delta=DRIFT_DELTA, burn_in=DRIFT_BURN_IN)
+    replay_buffers = [SeasonalReplayBuffer(DRIFT_BUFFER_PER_SEASON) for _ in range(NUM_CLIENTS)] if use_replay else None
     prev_season: str | None = None
 
     print(f"\n{'═' * 64}")
@@ -163,7 +164,7 @@ def run_scenario(name: str, get_train_fn, get_test_fn, use_replay: bool = False)
         mae_hist.append(mae)
 
         note = _drift_note(name, rnd)
-        if detector.atualizar_e_checar(mae):
+        if drift_detector.update_and_check(mae):
             alerta = f"[ALERTA] Concept Drift detectado na rodada {rnd}!"
             note = f"{note} | {alerta}" if note else alerta
         print(f"  {rnd:>7d}  │  {mae:>6.2f}%  │  {note}")

@@ -5,6 +5,7 @@ Geração do gráfico e tabela de resumo final (regressão de potência eólica)
 A métrica visual exibida é a Acurácia = 100 − MAE (em p.p. de Power).
 """
 
+from matplotlib.ticker import MultipleLocator
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -69,6 +70,7 @@ def plot_results(histories: dict, drift_round: int = DRIFT_ROUND) -> None:
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.set_xlim(1, NUM_ROUNDS)
+    ax.xaxis.set_major_locator(MultipleLocator(5))
 
     plt.tight_layout()
     plt.savefig(OUTPUT_FILE, dpi=150, bbox_inches="tight")

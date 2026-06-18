@@ -1,11 +1,4 @@
-"""
-config.py
-─────────
-Hiperparâmetros e constantes globais do experimento.
-"""
-
 import os
-
 import torch
 
 # ── Reprodutibilidade ────────────────────────────────────────────────────────
@@ -18,21 +11,22 @@ LOCAL_EPOCHS = 5
 BATCH_SIZE = 32
 LEARNING_RATE = 0.01
 
-# ── Concept Drift ────────────────────────────────────────────────────────────
-DRIFT_ROUND = 8  # rodada em que o drift começa
-CYCLE_LEN = 4  # rodadas por fase no drift recorrente
-# Detector por janela móvel: dispara quando MAE_atual > média(janela) × limiar.
-DRIFT_WINDOW_SIZE = 5
-DRIFT_THRESHOLD = 1.3
+# ── Drift Detector ────────────────────────────────────────────────────────────
+DRIFT_THRESHOLD = 0.3
+DRIFT_BURN_IN = 3
+DRIFT_DELTA = 0.01
 
-# SeasonalReplayBuffer: amostras máximas guardadas por estação, em cada cliente.
-REPLAY_BUFFER_SIZE = 500
+# ── Drift Corrector ───────────────────────────────────────────────────────────
+DRIFT_BUFFER_PER_SEASON = 500
+
+# ── Drift General ─────────────────────────────────────────────────────────────
+DRIFT_ROUND = 3
+CYCLE_LEN = 3
+
 # ── Dataset ──────────────────────────────────────────────────────────────────
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-# 6 numéricas brutas + 4 sin/cos de direção (10m e 100m) + 5 derivadas físicas
-# (v³ a 100m, densidade do ar, ρ·v³, hora sin/cos).
-FEATURE_DIM = 15
-TRAIN_FRACTION = 0.8  # split cronológico por janela sazonal
+FEATURE_DIM = 9
+TRAIN_FRACTION = 0.7  # split cronológico por janela sazonal
 MAX_TRAIN_PER_CLIENT = 2000  # subsample por cliente/estação (None = sem cap)
 
 # Eixos sazonais para o concept drift (hemisfério norte; o dataset é local).

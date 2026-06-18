@@ -24,6 +24,15 @@ from torch.utils.data import TensorDataset
 
 class SeasonalReplayBuffer:
     def __init__(self, max_size_per_season: int = 500):
+        """
+        Inicializa o buffer de replay sazonal.
+
+        Args:
+            max_size_per_season (int): O limite máximo de amostras (pares x, y)
+                que podem ser armazenadas para CADA estação individualmente.
+                Por exemplo, se definido como 500, o buffer guardará até 500
+                amostras de 'verao' e até 500 de 'inverno', totalizando 1000.
+        """
         self.max_size = max_size_per_season
         self.buffer: dict[str, list[tuple[torch.Tensor, torch.Tensor]]] = {
             "verao": [],

@@ -1,32 +1,52 @@
-"""
-drift_detector.py
-─────────────────
-Detector de concept drift por janela móvel.
+class PageHinkleyDetector:
+    """
+    Detector de Concept Drift baseado no Teste Estatístico de Page-Hinkley.
+    Adaptado para monitorizar aumentos no erro contínuo (como o MAE).
+    """
 
-Estratégia: mantém um histórico FIFO das últimas N losses (ou MAEs). Quando a
-janela está cheia, compara o valor mais recente com a média dos demais. Se o
-valor atual ultrapassar `média × limiar`, considera-se que houve drift.
+    def __init__(self, threshold: float = 0.10, delta: float = 0.005, burn_in: int = 3):
+        """
+        Parâmetros:
+        - threshold (lambda): Limite cumulativo. Se a soma dos aumentos de erro passar disto, é drift.
+        - delta: Tolerância mínima. Variações de erro muito pequenas não são somadas.
+        - burn_in: Número de rodadas iniciais (meses) ignoradas para a média estabilizar.
+        """
+        self.threshold = threshold
+        self.delta = delta
+        self.burn_in = burn_in
 
-Detector puramente observacional: apenas sinaliza, não age sobre o modelo.
-"""
+        # Variáveis de estado da memória do Page-Hinkley
+        self.n_samples = 0
+        self.cumulative_mean = 0.0
+        self.cumulative_sum = 0.0
 
-import numpy as np
+    def update_and_check(self, loss_atual: float) -> bool:
+        self.n_samples += 1
 
+        # 1. Atualiza a média histórica de forma incremental
+        self.cumulative_mean += (loss_atual - self.cumulative_mean) / self.n_samples
 
-class DetectorDeDrift:
-    def __init__(self, tamanho_janela: int = 5, limiar_alerta: float = 1.3):
-        self.tamanho_janela = tamanho_janela
-        self.limiar_alerta = limiar_alerta
-        self.historico_loss: list[float] = []
+        # Ignora as primeiras rodadas enquanto o modelo ainda está a aprender a média base
+        if self.n_samples < self.burn_in:
+            return False
 
-    def atualizar_e_checar(self, loss_atual: float) -> bool:
-        self.historico_loss.append(float(loss_atual))
+        # 2. Equação do Page-Hinkley: m_t = max(0, m_{t-1} + (x_t - média - delta))
+        # Queremos detetar se o erro está a AUMENTAR, logo medimos a diferença positiva.
+        higher = (loss_atual - self.cumulative_mean) - self.delta
 
-        if len(self.historico_loss) > self.tamanho_janela:
-            self.historico_loss.pop(0)
+        # Acumula o valor. Se o erro descer, a soma estabiliza em zero (max 0).
+        self.cumulative_sum = max(0.0, self.cumulative_sum + higher)
 
-        if len(self.historico_loss) == self.tamanho_janela:
-            media_passada = float(np.mean(self.historico_loss[:-1]))
-            if loss_atual > media_passada * self.limiar_alerta:
-                return True
+        # 3. Verifica se a soma cumulativa ultrapassou o limiar de alarme
+        if self.cumulative_sum > self.threshold:
+            # Reinicia os contadores para recomeçar a análise após o drift
+            self._reset()
+            return True
+
         return False
+
+    def _reset(self):
+        """Limpa a memória do detector para se adaptar à nova realidade climática."""
+        self.n_samples = 0
+        self.cumulative_mean = 0.0
+        self.cumulative_sum = 0.0
