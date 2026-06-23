@@ -1,4 +1,8 @@
+import os
+
 import matplotlib.pyplot as plt
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class VisualizationService:
@@ -14,6 +18,7 @@ class VisualizationService:
         plt.xticks(rodadas)
         plt.grid(True, linestyle="--", alpha=0.7)
         plt.tight_layout()
+        plt.savefig(os.path.join(_PROJECT_ROOT, "mae_history.png"), dpi=150, bbox_inches="tight")
         plt.show()
 
     @staticmethod
@@ -30,4 +35,5 @@ class VisualizationService:
         plt.grid(True, linestyle="--", alpha=0.7)
         plt.legend()
         plt.tight_layout()
+        plt.savefig(os.path.join(_PROJECT_ROOT, "mae_comparison.png"), dpi=150, bbox_inches="tight")
         plt.show()
